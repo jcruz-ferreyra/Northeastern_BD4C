@@ -1,0 +1,486 @@
+---
+title: "<span style='font-size:28px'>**Assignment 01: Tell a Data Story** (draft)</style>"
+author: "<span style='font-size:20px'>**Boston Food Establishment Inspections Dataset**</style>"
+date: "Juan Cruz Ferreyra"
+output:
+  html_document:
+    code_folding: "hide"
+---
+
+<style>
+body {
+  text-align: justify;
+  font-size: 16px;}
+</style>
+
+```{r, echo=FALSE}
+library(knitr)
+knitr::opts_chunk$set(warning=FALSE, message=FALSE, echo=TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(sf)
+library(ggmap)
+library(tmap)
+library(tmaptools)
+library(osmdata)
+library(kableExtra)
+library(rlang)
+library(writexl)
+```
+
+```{r}
+trim_strings <- function(x) {
+  return(ifelse(nchar(x) > 30, paste0(substr(x, 1, 27), "..."), x))
+}
+
+
+trim_cols <- function(df, columns) {
+  for (column in columns) {
+    df[column] <- lapply(df[column], trim_strings)
+  }
+  
+  return(df)
+}
+
+
+format_table <- function(df) {
+  df <- df %>% 
+    kbl(align = "c", longtable = TRUE) %>% 
+    kable_styling(
+      bootstrap_options = c("striped", "condensed"),
+      full_width = TRUE,
+      font_size = 12) %>%
+    column_spec(1, width_min = "50%")
+  
+  return(df)
+}
+
+
+split_lat_lon <- function(location) {
+  # Remove parentheses and split by comma
+  coords <- gsub("[()]", "", location)  # Remove parentheses
+  lat_lon <- unlist(strsplit(coords, ", "))  # Split by comma and space
+  return(as.numeric(lat_lon))  # Convert to numeric
+}
+```
+
+***
+<br>
+
+**Context**
+
+This work is part of the graduate course [Big Data for Cities](https://ui.danourban.com/ "ui.danourban.com"), taught by Dan O'Brien at Northeastern University, Boston, MA. The course focuses on leveraging large-scale digital datasets to analyze and improve urban living. Through experiential learning, students collaborate with local organizations to turn data into actionable insights that benefit communities.
+
+This year, we are partnering with the Dudley Street Neighborhood Initiative and Project RIGHT in Grove Hall, two organizations serving the communities along Blue Hill Ave. in northern Roxbury, a neighborhood adjacent to Northeastern’s campus.
+
+***
+<br>
+
+**Exploring the dataset**
+
+The first step in working with any dataset is to familiarize ourselves with it by reviewing the available documentation and conducting an initial inspection. This helps us better understand the potential applications of the dataset for our specific task—in this case, getting insights about Boston's neighborhoods.
+
+```{r}
+# Load dataset
+main_path <- paste0(getwd(), "/..")
+df <- read.csv(paste0(main_path, "/data/resto_inspections.csv"))
+
+# Order by business name and inspection date
+df <- df %>% 
+  arrange(businessname, resultdttm)
+
+# Cast every empty string to NA
+df <- df %>%
+  mutate_if(is.character, str_trim) %>%
+  mutate_if(is.character, list(~na_if(.,"")))
+```
+
+The [Boston Food Establishment Inspections dataset](https://data.boston.gov/dataset/food-establishment-inspections "data.boston.gov") contains the outcomes of food establishment inspections conducted in Boston greater area since 2006. Updated daily, this dataset provides insights into the sanitary conditions of businesses serving food. For this analysis, we are working with a static version of the dataset, downloaded on September 13, 2024, comprising **`r ncol(df)`** columns, and **`r nrow(df)`** individual records.
+
+These inspections are carried out by the Health Division of the Department of Inspectional Services, tasked with ensuring compliance with local sanitary codes. Every business serving food is inspected at least once a year, with high-risk establishments receiving follow-up inspections. Health inspections are also triggered by complaints regarding unsanitary conditions or illness.
+
+The dataset includes information such as the time and location of each inspection, the business entity responsible, and the licensing details. It also records inspection outcomes, violations noted, and any follow-up actions or comments, offering a comprehensive view of Boston’s food safety practices.
+
+It consists of the following variables:
+
+```{r}
+columns_description <- list(
+  list(
+    "ColumnName" = "X_id",
+    "RefersTo" = "violation record",
+    "Description" = "id for the individual record"),
+  list(
+    "ColumnName" = "businessname",
+    "RefersTo" = "business admin",
+    "Description" = "business name of food establishment"),
+  list(
+    "ColumnName" = "dbaname",
+    "RefersTo" = "business admin",
+    "Description" = "doing business as"),
+  list(
+    "ColumnName" = "legalowner",
+    "RefersTo" = "business admin",
+    "Description" = "legal owner of food establishment"),
+  list(
+    "ColumnName" = "namelast",
+    "RefersTo" = "business admin",
+    "Description" = "contact's last name"),
+  list(
+    "ColumnName" = "namefirst",
+    "RefersTo" = "business admin",
+    "Description" = "contact's first name"),
+  list(
+    "ColumnName" = "licenseno",
+    "RefersTo" = "business admin",
+    "Description" = "license number of food establishment"),
+  list(
+    "ColumnName" = "issdttm",
+    "RefersTo" = "business admin",
+    "Description" = "issue date of license"),
+  list(
+    "ColumnName" = "expdttm",
+    "RefersTo" = "business admin",
+    "Description" = "expiration date of license"),
+  list(
+    "ColumnName" = "licstatus",
+    "RefersTo" = "business admin",
+    "Description" = "status of license"),
+  list(
+    "ColumnName" = "licensecat",
+    "RefersTo" = "business admin",
+    "Description" = "category of license"),
+  list(
+    "ColumnName" = "descript",
+    "RefersTo" = "business admin",
+    "Description" = "type of food establishment"),
+  list(
+    "ColumnName" = "result",
+    "RefersTo" = "inspection",
+    "Description" = "result of inspection"),
+  list(
+    "ColumnName" = "resultdttm",
+    "RefersTo" = "inspection",
+    "Description" = "date on which the results were generated"),
+  list(
+    "ColumnName" = "violation",
+    "RefersTo" = "violation record",
+    "Description" = "coding of law regulation related to violations"),
+  list(
+    "ColumnName" = "viol_level",
+    "RefersTo" = "violation record",
+    "Description" = "level of violation"),
+  list(
+    "ColumnName" = "violdesc",
+    "RefersTo" = "violation record",
+    "Description" = "reason of violation"),
+  list(
+    "ColumnName" = "violdttm",
+    "RefersTo" = "violation record",
+    "Description" = "date on which violation status was generated"),
+  list(
+    "ColumnName" = "viol_status",
+    "RefersTo" = "violation record",
+    "Description" = "status for violation"),
+  list(
+    "ColumnName" = "status_date",
+    "RefersTo" = "violation record",
+    "Description" = "date on which violation status was set to pass"),
+  list(
+    "ColumnName" = "comments",
+    "RefersTo" = "violation record",
+    "Description" = "comments given to the food establishment for improvement"),
+  list(
+    "ColumnName" = "address",
+    "RefersTo" = "establishment loc",
+    "Description" = "address of the food establishment"),
+  list(
+    "ColumnName" = "city",
+    "RefersTo" = "establishment loc",
+    "Description" = "city of the food establishment"),
+  list(
+    "ColumnName" = "state",
+    "RefersTo" = "establishment loc",
+    "Description" = "state of the food establishment"),
+  list(
+    "ColumnName" = "zip",
+    "RefersTo" = "establishment loc",
+    "Description" = "zip code of the food establishment"),
+  list(
+    "ColumnName" = "property_id",
+    "RefersTo" = "establishment loc",
+    "Description" = "property id of the food establishment"),
+  list(
+    "ColumnName" = "location",
+    "RefersTo" = "establishment loc",
+    "Description" = "latitude and longitude of the food establishment")
+  )
+
+
+get_cols_summary <- function(df, descriptions) {
+  info_list <- list()
+  
+  for (c in names(df)) {
+    column_data <- df[[c]]
+    description <- descriptions[
+      sapply(descriptions, function(x) x$ColumnName == c)
+      ]
+    
+    info <- list(
+      "ColumnName" = c,
+      "RefersTo" = description[[1]]$RefersTo,
+      "Description" = description[[1]]$Description,
+      "DataType" = class(column_data),
+      "NonNullCount" = sum(!is.na(column_data)),
+      "UniqueCount" = length(unique(column_data[!is.na(column_data)]))
+    )
+    
+    info_list <- append(info_list, list(info))
+  }
+  
+  return(do.call(rbind, lapply(info_list, as.data.frame)))
+}
+
+df_cols_summary <- df %>%
+  get_cols_summary(columns_description)
+
+filename <- "/table01_colssummary"
+write_xlsx(df_cols_summary, paste0(main_path, "/results/01_tell_a_data_story", filename, ".xlsx"))
+
+write.csv(df_cols_summary, paste0(main_path, "/data/resto_inspections_metadata.csv"), row.names = FALSE)
+
+df_cols_summary %>% 
+  format_table() %>%
+  scroll_box(height = "500px")
+```
+
+<br>
+
+Upon initial inspection, we observe that most columns are in character format, with only three in numeric form. Based on their names, we can infer that the latter variables represent various types of IDs (e.g., registration, license, or property IDs) and are unlikely to hold significant value as numerical data. While they may reflect the order of registration, we do not expect this information to be meaningful for our analysis at this stage.
+
+The remaining character columns exhibit a more diverse set of data types. Some likely represent date-time information, particularly those ending in 'dttm', while another appears to store the establishment geographic coordinates. These fields are often mistakenly read as character data in CSV formats, so we’ll need to reassign their correct data types to facilitate proper analysis.
+
+```{r}
+df <- df %>% 
+  mutate(
+    issdttm = ymd_hms(issdttm),
+    issdttm = ymd_hms(issdttm),
+    resultdttm = ymd_hms(resultdttm)
+    )
+
+df$latitude <- sapply(df$location, function(x) split_lat_lon(x)[1])
+df$longitude <- sapply(df$location, function(x) split_lat_lon(x)[2])
+```
+
+Additionally, we’ve identified columns that likely contain free-text entries, alongside others that seem to represent categorical data, ranging from high to low cardinality. A thorough review of these columns will allow us to distinguish between them more effectively and clean the dataset to ensure consistency. For instance, we’ll check for discrepancies in category labels to confirm that each category is uniformly represented across the dataset.
+
+```{r}
+fix_categories <- function(df, column, value, alternatives) {
+  is_alternative <- df[[column]]%in%alternatives
+  if (value=="") {
+    df[is_alternative, column] <- NA
+  } else {
+    df[is_alternative, column] <- value
+  }
+  
+  return(df)
+}
+
+# Fix categories in result column
+df <- fix_categories(df, "result", "HE_Pass", c("Pass", "NoViol", "PassViol"))
+df <- fix_categories(df, "result", "HE_Fail", c("Fail", "Failed"))
+
+# Fix categories in viol_level column
+df <- fix_categories(df, "viol_level", "", c(" ", "1919"))
+df <- df %>% 
+  mutate(viol_level = gsub("\\*\\*\\*", "3",viol_level)) %>% 
+  mutate(viol_level = gsub("\\*\\*", "2",viol_level)) %>% 
+  mutate(viol_level = gsub("\\*", "1",viol_level)) %>% 
+  mutate(viol_level = gsub("-", "None",viol_level))
+
+# Fix categories in city column
+df <- df %>% 
+  mutate(city = gsub("\\s+", " ", city)) %>% 
+  mutate(address = gsub("\\s+", " ", address)) %>% 
+  mutate(city = gsub("/", " ", city)) %>% 
+  mutate(city = str_trim(city)) %>%
+  mutate(city = gsub("BOSTON CHINATOWN", "CHINATOWN", city)) %>% 
+  mutate(city = gsub("DORCHESTER CENTER", "DORCHESTER", city)) %>%
+  mutate(city = gsub("BOSTON WEST END", "WEST END", city)) %>% 
+  mutate(city = gsub("DOWNTOWN FINANCIAL DISTRICT", "FINANCIAL DISTRICT", city)) %>% 
+  mutate(city = gsub("ROXBURY BOSTON", "ROXBURY", city)) %>% 
+  mutate(city = gsub("ROXBURY CROSSIN", "ROXBURY", city))
+
+# Fix categories in state column
+df <- df %>% 
+  mutate(state = tolower(state))
+
+# Fix categories in zip column
+df <- df %>% 
+  mutate(zip = ifelse(substr(zip, 1, 1) != "0", paste0("0", zip), zip)) %>%
+  mutate(zip = sub("-.*", "", zip)) %>% 
+  mutate(zip = paste0(", ", zip))
+
+names(df)[names(df) == 'zip'] <- 'zip_code'
+```
+
+```{r include=FALSE}
+write.csv(df, paste0(main_path, "/data/resto_inspections_clean_01.csv"), row.names = FALSE)
+```
+
+***
+<br>
+
+**Understanding the dataset**
+
+We analyze a sample of six consecutive records from a single restaurant to gain initial insights into the dataset’s structure. By focusing on multiple records from the same establishment, we can observe its inspection history and identify patterns or changes over time, providing a clearer understanding of how the data is organized and recorded.
+
+```{r}
+# Define a sample for reproductibility
+id_subset <- c(146583:146588)
+
+df_sample <- df %>% 
+  # sample_n(5) %>%
+  filter(X_id%in%id_subset) %>% 
+  trim_cols(c("violdesc", "comments"))
+
+filename <- "/table02_sample"
+write_xlsx(df_sample, paste0(main_path, "/results/01_tell_a_data_story", filename, ".xlsx"))
+
+# Show the sample
+df_sample %>% 
+  format_table() %>%
+  scroll_box(width = "100%")
+```
+
+<br>
+
+The selected sample offers a glimpse into a series of inspections conducted in 2014 at Chez Tata, an eating and drinking establishment. Given that the license issue date is set for September 12th, and that the license status in these observations is inactive, we can infer that these inspections were likely part of a pre-opening evaluation to ensure the establishment met health and safety standards.
+
+The first record details an inspection on August 15th, conducted at 6 pm. During this visit, the inspector noted a minor violation related to non-food contact surfaces. Specifically, the inspector advised the owner to replace a plastic prep sink with a stainless steel one—probably due to the latter’s ease of cleaning. As this issue was deemed important for the restaurant’s readiness to open, the overall inspection received a Fail status, prompting the establishment to address the violation before progressing further.
+
+Just over two weeks later, the inspector returned. Interestingly, not only was the initial issue unresolved but a new minor violation was also found, this time concerning food contact surfaces. The inspector suggested that the restaurant acquire additional storage containers for bulk foods, likely to improve hygiene and organization. Since both violations were seen as relatively simple to resolve and there appeared to be an effort to address the earlier problem, the status of this second inspection was recorded as Hearing, signaling that a final inspection would follow in short order.
+
+On September 9th, the third and final inspection in this series took place. By this time, both previously noted violations had been corrected, and with no new issues discovered, the status was upgraded to Pass. This green light allowed Chez Tata to proceed with its grand opening just three days later, as the restaurant’s license became active on September 12th.
+
+Notably, a much later inspection, scheduled for March 15th, 2022, was marked as Not Required. This could indicate that the business was no longer operational. Indeed, with the license having expired in 2015 and never renewed, it seems likely that Chez Tata closed its doors permanently not long after its brief period of operation.
+
+***
+
+This dataset fragment reveals much about how inspections are conducted and recorded. Each record corresponds to a single violation, meaning that multiple records can exist for the same inspection if several violations are found during the procedure. Each violation is documented with its own description and severity classification, but records from the same inspection share the inspection result and date-time fields.
+
+Remarkably, after an inspection resulting in a Fail status, a follow-up inspection typically occurs within a few weeks—or even sooner—to check on the progress of previously identified violations. During these follow-ups, inspectors may discover new violations in addition to reassessing the original ones. When a violation is resolved, it is recorded with a new violation ID, and the status is updated to Pass. There is also a dedicated field to log the date when an issue is resolved.
+
+Records referring to the same violation, whether for the initial Fail or a subsequent reassessment, are logged with the same description and comments. Once all violations from an earlier inspection are resolved, and no new issues are found, the inspection receives an overall Pass status.
+
+Additionally, other inspection statuses appear in the dataset, such as Hearing and NotReq. Further exploration of the possible values in the 'result' column and their meanings would be valuable for understanding the full range of inspection outcomes.
+
+After reviewing individually each of the possible values for an inspection status we can infer the meaning of them as follows:
+
+```{r}
+results_description <- list(
+  list(
+    "InspectionResult" = "HE_Fail",
+    "InferredDescription" = "Inspection failed; violations found"),
+  list(
+    "InspectionResult" = "HE_Pass",
+    "InferredDescription" = "Inspection passed; no issues found"),
+  list(
+    "InspectionResult" = "HE_Filed",
+    "InferredDescription" = "Minor violations found; no urgent follow-up required"),
+  list(
+    "InspectionResult" = "HE_FailExt",
+    "InferredDescription" = "Extended failure from prior inspection"),
+  list(
+    "InspectionResult" = "HE_Hearing",
+    "InferredDescription" = "Violations being addressed; follow-up required"),
+  list(
+    "InspectionResult" = "HE_NotReq",
+    "InferredDescription" = "Inspection not required; no immediate need"),
+  list(
+    "InspectionResult" = "HE_TSOP",
+    "InferredDescription" = "Temporary suspension of permit issued"),
+  list(
+    "InspectionResult" = "HE_OutBus",
+    "InferredDescription" = "Business closed; out of operation"),
+  list(
+    "InspectionResult" = "HE_VolClos",
+    "InferredDescription" = "Voluntary closure by business to avoid penalties"),
+  list(
+    "InspectionResult" = "HE_Closure",
+    "InferredDescription" = "Forced closure due to critical violations"),
+  list(
+    "InspectionResult" = "HE_FAILNOR",
+    "InferredDescription" = "Inspection failed; follow-up not immediate"),
+  list(
+    "InspectionResult" = "HE_Misc",
+    "InferredDescription" = "Miscellaneous or unclassified inspection result"),
+  list(
+    "InspectionResult" = "DATAERR",
+    "InferredDescription" = "Data error; incomplete or missing fields"),
+  list(
+    "InspectionResult" = "HE_Hold",
+    "InferredDescription" = "Inspection on hold; immediate follow-up"),
+  list(
+    "InspectionResult" = "Closed",
+    "InferredDescription" = "Doors closed; inspection carried out later")
+)
+
+
+get_results_summary <- function(df, descriptions) {
+  info_list <- list()
+  
+  unique_results <- unique(df$result)
+  for (r in unique_results) {
+    df_result <- df %>% 
+      filter(result==r)
+    
+    description <- descriptions[
+      sapply(descriptions, function(x) x$InspectionResult == r)
+      ]
+    
+    info <- list(
+      "InspectionResult" = r,
+      "InferredDescription" = description[[1]]$InferredDescription,
+      "Appearances" = nrow(df_result),
+      "FirstAppearance" = min(na.omit(df_result$resultdttm)),
+      "LastAppearance" = max(na.omit(df_result$resultdttm))
+    )
+    
+    info_list <- append(info_list, list(info))
+  }
+  
+  return(do.call(rbind, lapply(info_list, as.data.frame)))
+}
+
+df_results_summary <- df %>% 
+  get_results_summary(results_description) %>% 
+  arrange(desc(Appearances))
+
+filename <- "/table03_resultssummary"
+write_xlsx(df_results_summary, paste0(main_path, "/results/01_tell_a_data_story", filename, ".xlsx"))
+
+df_results_summary %>% 
+  format_table() %>% 
+  scroll_box()
+```
+
+***
+
+<br>
+
+**Next Steps**
+
+Aggregating data at the inspection level offers a valuable opportunity for deeper analysis. While some granular details may be lost in the process, new variables can be created to capture meaningful insights. For instance, we could introduce variables such as the total number of violations found or resolved during an inspection, or break down the violations by severity level. Additionally, free-text columns, like the comments for each violation, could be processed to generate indicator variables—such as a 'rodents' flag, marking inspections where rodent-related violations were noted.
+
+By shifting the focus from individual violations to the broader context of each inspection, we unlock the potential for statistical analysis, allowing us to explore correlations across various factors. This approach also enables us to identify patterns over time, connect inspections that follow up on previous ones, and distinguish them from those that stand alone. Such aggregation is especially powerful when working with large datasets, where the bigger picture often reveals insights that individual records might obscure.
+
+Moreover, leveraging the spatial and temporal data within the dataset can provide a richer understanding of how inspections evolve and how external factors, like the neighborhoods where establishments are located, may influence outcomes, and vice versa. Overall, this approach aligns well with the goals of urban informatics, where aggregated, multi-layered data is essential for uncovering trends, patterns, and connections that inform smarter decision-making.
+
+***
+
+<br>
+
+<span style="color: gray20; font-size: 14px;">*Acknowledgment: ChatGPT was used in this post. It assisted in two main tasks. First, it helped with the writing process. Secondly, it assisted in developing some of the code used in this work.*</span>
+

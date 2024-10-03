@@ -1,0 +1,382 @@
+---
+title: "<span style='font-size:28px'>**Assignment 01: Tell a Data Story** (draft)</style>"
+author: "<span style='font-size:20px'>**Boston Food Establishment Inspections Dataset**</style>"
+date: "Juan Cruz Ferreyra"
+output:
+  html_document:
+    code_folding: "hide"
+---
+
+<style>
+body {
+  text-align: justify;
+  font-size: 16px;}
+</style>
+
+```{r, echo=FALSE}
+library(knitr)
+knitr::opts_chunk$set(warning=FALSE, message=FALSE, echo=TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(sf)
+library(ggmap)
+library(tmap)
+library(tmaptools)
+library(osmdata)
+library(kableExtra)
+library(rlang)
+```
+
+```{r}
+# Load dataset
+main_path <- paste0(getwd(), "/..")
+df <- read.csv(paste0(main_path, "/data/resto_inspections_clean.csv"))
+
+names(df)[names(df) == 'zip'] <- 'zip_code'
+```
+
+```{r}
+df$zip_code %>% unique()
+```
+
+# Get basemap
+
+```{r, include=FALSE}
+register_stadiamaps("4107f68c-0827-4b47-958d-89f9f1f37a58", write = FALSE)
+```
+
+```{r}
+bbox_boston <- c(
+  "left" = -71.195,
+  "bottom" = 42.230,
+  "right" = -70.955, 
+  "top" = 42.400
+)
+
+basemap_boston <- get_stadiamap(bbox=bbox_boston,
+                              maptype="stamen_terrain",
+                              zoom=12)
+```
+
+```{r height=500}
+ggmap(basemap_boston) +
+  theme_void()
+```
+
+```{r}
+df %>% 
+  filter(
+    (longitude < bbox_boston["left"][[1]] | longitude > bbox_boston["right"][[1]]) |
+    (latitude < bbox_boston["bottom"][[1]] | latitude > bbox_boston["top"][[1]])
+    ) %>% 
+  count(licensecat)
+```
+
+Encontramos que entre las coordenadas que se encuentran fuera de Boston tenemos establecimeintos con la 4 diferentes categorías posibles. MFW son los food trucks. Vamos a ver si todos los foodtrucks tienen corrupto ese campo o no.
+
+```{r}
+df %>% 
+  filter(licensecat=="MFW") %>% 
+  count(address)
+```
+
+No todos se mueven por todos lados. Algunos tienen una ubicación precisa.
+
+# 2 sources of data for location (coords and address), check for discrepancies. Every one has an address. Not everyone has coords.
+
+```{r}
+geocode_df <- function(x){
+  geocode_address <- geocode_OSM(x, as.data.frame = TRUE)
+  geocode_address$address <- geocode_address$query
+  df <- select(geocode_address, address, lat, lon)
+}
+```
+
+```{r}
+# Geocode data
+df_address <- df[c("address", "zip_code")] %>%
+  filter(duplicated(address) == FALSE) %>% 
+  filter(!is.na(address)) %>% 
+  mutate(original_address = address) %>% 
+  mutate(address = tolower(address))
+```
+
+```{r}
+suffixes <- c("st", "way", "ave", "sq", "pl", "plaza", "dr", "blvd", "rd", "b", "e", "c", "d", "highway", "island", "wharf", "park", "parkway", "lane", "extension", "terrace", "dam", "south", "street", "row", "cornhill", "arborway", "place", "avenue")
+```
+
+```{r}
+df_address <- df_address %>% 
+  mutate(address = gsub("\\s+", " ", address)) %>%
+  mutate(address = gsub(" wm t morrissey  bl$", " william t morrissey blvd", address)) %>%
+  mutate(address = gsub(".*faneuil hall.*$", "10 north market st", address)) %>% 
+  mutate(address = gsub("1.*financial.*$", "180 summer st", address)) %>% 
+  mutate(address = gsub("washington.*$", "washington st", address)) %>% 
+  mutate(address = gsub("trmnl", "terminal", address)) %>%
+  mutate(address = gsub(" wy$", " way", address)) %>% 
+  mutate(address = gsub(" wa$", " way", address)) %>%
+  mutate(address = gsub(" av$", " ave", address)) %>% 
+  mutate(address = gsub(" bl$", " blvd", address)) %>% 
+  mutate(address = gsub(" ct$", " st", address)) %>% 
+  mutate(address = gsub(" pkwy$", " parkway", address)) %>% 
+  mutate(address = gsub(" hwy$", " highway", address)) %>% 
+  mutate(address = gsub(" hw$", " highway", address)) %>% 
+  mutate(address = gsub(" wh$", " wharf", address)) %>% 
+  mutate(address = gsub(" whf$", " wharf", address)) %>% 
+  mutate(address = gsub(" pk$", " park", address)) %>% 
+  mutate(address = gsub(" cr$", " st", address)) %>% 
+  mutate(address = gsub(" ro$", " row", address)) %>% 
+  mutate(address = gsub(" pl$", " place", address)) %>% 
+  mutate(address = gsub(" plz$", " plaza", address)) %>% 
+  mutate(address = gsub(" pz$", " plaza", address)) %>% 
+  mutate(address = gsub(" pw$", " parkway", address)) %>% 
+  mutate(address = gsub(" building (fhmp)$", " ", address)) %>% 
+  mutate(address = gsub(" m l king$", " m l king blvd", address)) %>% 
+  mutate(address = gsub(" la$", " lane", address)) %>% 
+  mutate(address = gsub(" ln$", " lane", address)) %>% 
+  mutate(address = gsub(" av ex$", " ave extension", address)) %>% 
+  mutate(address = gsub(" te$", " terrace", address)) %>% 
+  mutate(address = gsub(" cir$", " st", address)) %>% 
+  mutate(address = gsub(" pr$", " park", address)) %>% 
+  mutate(address = gsub(" dm$", " dam", address)) %>% 
+  mutate(address = gsub(" ave.$", " ave", address)) %>%
+  mutate(address = gsub(" pier 4 ", " pier four ", address)) %>%
+  mutate(address = gsub(" pier 4 ", " pier four ", address)) %>%
+  mutate(address = gsub("dry dock", "drydock", address)) %>%
+  mutate(address = gsub("v f w", "vfw", address)) %>%
+  mutate(address = gsub("st thomas mo.*re.*$", "saint thomas more rd", address)) %>%
+  mutate(address = ifelse(!word(address, -1) %in% suffixes, paste0(address, " st"), address)) %>% 
+  mutate(address = gsub("street st", "st", address)) %>% 
+  mutate(address = gsub("st st", "st", address)) %>%  
+  mutate(address = gsub("sq sq", "sq", address)) %>% 
+  mutate(address = gsub("la grange", "lagrange", address)) %>% 
+  mutate(address = gsub("truman highway", "truman parkway", address)) %>% 
+  mutate(address = gsub("guest$", "guest st", address)) %>% 
+  mutate(address = gsub("mass ave$", "massachusetts ave", address)) %>% 
+  mutate(address = gsub("government center st", "government center", address)) %>% 
+  mutate(address = gsub("louis pasteur st", "louis pasteur", address)) %>% 
+  mutate(address = gsub("boston fish pier st", "fish pier", address)) %>% 
+  mutate(address = gsub("waterside.*", "waterside drive", address)) %>% 
+  mutate(address = gsub("lafayette st", "lafayette", address)) %>% 
+  mutate(address = gsub(".*charles river dam.*", "charles river dam", address)) %>% 
+  mutate(address = gsub("first$", "first st", address)) %>% 
+  mutate(address = gsub("columbus st", "columbus ave", address)) %>% 
+  mutate(address = gsub("east$", "east st", address)) %>% 
+  mutate(address = gsub("kington", "kingston", address)) %>% 
+  mutate(address = gsub("longwood st", "longwood ave", address)) %>% 
+  mutate(address = gsub("pi alley st", "pi alley", address)) %>% 
+  mutate(address = gsub("fish pier st", "fish pier rd", address)) %>% 
+  mutate(address = gsub("walnut pk st", "walnut park", address))
+```
+
+```{r}
+df_address %>%
+  filter(str_detect(tolower(address), "first")) %>% 
+  pull(address) %>% 
+  unique()
+```
+```{r}
+df_address <- df_address %>% 
+  mutate(address_query = paste0(tolower(address), ", Boston, Massachusetts", if_else(zip_code==", NA", "", zip_code)))
+```
+
+
+```{r}
+# df_address_geocoded <- data.frame()
+```
+
+```{r}
+df_address_ungeocoded <- df_address %>% 
+  filter(!(original_address%in%(df_address_geocoded$original_address)))
+```
+
+```{r}
+df_address_geocoded
+```
+
+
+```{r}
+df_address_ungeocoded <- df_address_ungeocoded %>% 
+  filter(!(str_detect(tolower(address), "citywide"))) %>% 
+  filter(!(str_detect(tolower(address), "logan"))) %>% 
+  filter(!(str_detect(tolower(address), "lewis mall"))) %>% 
+  filter(!(str_detect(tolower(address), "vfw"))) %>% 
+  filter(!(str_detect(tolower(address), "common"))) %>% 
+  filter(!(str_detect(tolower(address), "providence"))) %>% 
+  filter(!(str_detect(tolower(address), "m l king"))) %>% 
+  filter(!(str_detect(tolower(address), "amer legion"))) %>% 
+  filter(!(str_detect(tolower(address), "international p"))) %>% 
+  filter(!(str_detect(tolower(address), "fhmp"))) %>% 
+  filter(!(str_detect(tolower(address), "island"))) %>% 
+  filter(!(str_detect(tolower(address), "embankment"))) %>% 
+  filter(!(str_detect(tolower(address), "yawkey"))) %>% 
+  filter(!(str_detect(tolower(address), "kelly s"))) %>% 
+  filter(!(str_detect(tolower(address), "circuit"))) %>% 
+  filter(!(str_detect(tolower(address), "terminal"))) %>% 
+  filter(!(str_detect(tolower(address), "420 west"))) %>% 
+  filter(!(str_detect(tolower(address), "station"))) %>% 
+  filter(!(str_detect(tolower(address), "kinley"))) %>% 
+  filter(!(str_detect(tolower(address), "charles river dam"))) %>% 
+  filter(!(str_detect(tolower(address), "accolon"))) %>% 
+  filter(!(str_detect(tolower(address), "exeter"))) %>% 
+  filter(!(str_detect(tolower(address), "fleet"))) %>% 
+  filter(!(str_detect(tolower(address), "pittsburg")))
+
+```
+
+```{r}
+batch_size <- 32
+for (i in seq(1, nrow(df_address_ungeocoded), by = batch_size)) {
+  batch_rows <- df_address_ungeocoded[i:min(i+batch_size-1, nrow(df_address_ungeocoded)), ]
+  
+  geocoded_batch <- pmap(list(batch_rows$address_query), geocode_df) %>% 
+    reduce(rbind)
+  
+  geocoded_batch <- geocoded_batch %>% 
+    left_join(
+      batch_rows[c("address_query", "original_address")],
+      by = c("address"="address_query")
+    )
+  
+  df_address_geocoded <- rbind(df_address_geocoded, geocoded_batch)
+  
+  cat("Processed rows", i, "to", min(i+batch_size-1, nrow(df_address_ungeocoded)), "\n")
+  
+  # Optional: Save intermediate results to a file to avoid data loss if a crash happens
+  # write.csv(geocoded_df, "geocoded_df_intermediate.csv", row.names = FALSE)
+}
+```
+
+```{r}
+write.csv(df_address_geocoded, "D:/Documentos/Data/2024_Northeastern/BD4C/data/partial.csv")
+```
+
+```{r}
+batch_rows <- df_address_ungeocoded[i:min(i+batch_size-1, nrow(df_address_ungeocoded)), ]
+```
+
+```{r}
+df %>%
+  mutate(last_word = word(address, -1)) %>%  # Get the last word of each 'name'
+  distinct(last_word) 
+```
+
+
+
+```{r}
+# This code is good for finding if a pattern appears in some other way. Example, faneuil. Is a market and also a street.
+df_address %>%
+  filter(str_detect(tolower(address_query), " mkt,")) %>% 
+  pull(address_query) %>% 
+  unique()
+```
+
+citywide son FOODTRUCKS en su mayoría!!!! Hay algunos viejos. Y destaca Thompson Island Outward Bound que sigue activo y tiene esa categoría de domicilio.
+
+```{r}
+df %>%
+  filter(str_detect(tolower(address), "citywide")) %>% 
+  filter(licensecat!="MFW") %>% 
+  arrange(desc(resultdttm)) %>% 
+  filter(businessname!="Thompson Island Outward Bound")
+```
+
+```{r}
+
+```
+
+
+
+
+
+# Visualize establishments
+
+```{r}
+gdf <- df %>% 
+  filter(!(is.na(longitude) | is.na(latitude))) %>% 
+  st_as_sf(coords = c("longitude", "latitude"), crs = 4326)
+```
+
+```{r}
+ggmap(basemap_boston) +
+  geom_sf(data=sample_n(gdf, 50000), color="#542788", shape=16, size=.5, alpha=0.05, inherit.aes=FALSE) +
+  theme_light() +
+  theme(plot.margin = margin(35, 5, 15, 5),
+        aspect.ratio = 1
+  )
+```
+
+
+#
+
+
+```{r}
+df %>% 
+  filter(!is.na(latitude)) %>%
+  filter(latitude>35) %>% 
+  arrange(latitude)
+```
+
+```{r}
+df$address %>% unique() %>% length()
+```
+
+```{r}
+df$businessname %>% unique() %>% length()
+```
+
+```{r}
+df_business_address <- df %>% 
+  group_by(businessname, address) %>% 
+  summarise(n()) %>% 
+  ungroup()
+```
+
+```{r}
+df %>% 
+  count(city)
+```
+
+
+```{r}
+df %>%
+  filter(is.na(address))
+```
+
+
+Include those weird coordinates in the assignment boundaries. Why are those points so far away from Boston?
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

@@ -1,0 +1,136 @@
+---
+title: "<span style='font-size:28px'>**Assignment 03: Revealing Knowledge** (draft)</style>"
+author: "<span style='font-size:20px'>**Boston Food Establishment Inspections Dataset**</style>"
+date: "Juan Cruz Ferreyra"
+output:
+  html_document:
+    code_folding: "hide"
+---
+
+<style>
+body {
+  text-align: justify;
+  font-size: 16px;}
+</style>
+
+```{r, echo=FALSE}
+library(knitr)
+knitr::opts_chunk$set(warning=FALSE, message=FALSE, echo=TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(stringr)
+library(sf)
+library(ggmap)
+library(tmap)
+library(tmaptools)
+library(osmdata)
+library(kableExtra)
+library(rlang)
+library(writexl)
+```
+
+```{r}
+format_table <- function(df) {
+  df <- df %>% 
+    kbl(align = "c", longtable = TRUE) %>% 
+    kable_styling(
+      bootstrap_options = c("striped", "condensed"),
+      full_width = TRUE,
+      font_size = 12) %>%
+    column_spec(1, width_min = "50%")
+  
+  return(df)
+}
+```
+
+
+***
+<br>
+
+**Context**
+
+This work is part of the graduate course [Big Data for Cities](https://ui.danourban.com/ "ui.danourban.com"), taught by Dan O'Brien at Northeastern University, Boston, MA. For more details, refer to the [first post](link_to_first_post "") of this series.
+
+Additionally, here is the [full list](link_to_full_list "") of posts for this series.
+
+***
+<br>
+
+**Viewing the dataset**
+
+```{r}
+# Load dataset
+main_path <- paste0(getwd(), "/..")
+df <- read.csv(paste0(main_path, "/data/resto_inspections_clean_02.csv"))
+df_inspections <- read.csv(paste0(main_path, "/data/resto_inspections_grouped_02.csv"))
+
+df <- df %>% 
+  mutate(
+    issdttm = ymd_hms(issdttm),
+    issdttm = ymd_hms(issdttm),
+    resultdttm = ymd_hms(resultdttm)
+    )
+
+df_inspections <- df_inspections %>% 
+  mutate(
+    issdttm = ymd_hms(issdttm),
+    issdttm = ymd_hms(issdttm),
+    resultdttm = ymd_hms(resultdttm)
+    )
+```
+
+
+
+**Creation of new variables**
+
+```{r}
+# Check for rodents in comments
+are_rodents_in_comments <- str_detect(tolower(df$comments), "rodent|\\srat\\s|\\srats\\s|mice")
+are_rodents_in_comments[is.na(are_rodents_in_comments)] <- FALSE
+# Check for rodents in description
+are_rodents_in_desc <- str_detect(tolower(df$violdesc), "rodent|\\srat\\s|\\srats\\s")
+are_rodents_in_desc[is.na(are_rodents_in_desc)] <- FALSE
+
+are_rodents <- are_rodents_in_comments | are_rodents_in_desc
+df$rodents <- as.numeric(are_rodents)
+
+# Check for insects in comments
+are_insects_in_comments <- str_detect(tolower(df$comments), "insect|pest|parasite|\\sfly|flies|roach")
+are_insects_in_comments[is.na(are_insects_in_comments)] <- FALSE
+# Check for insects in description
+are_insects_in_desc <- str_detect(tolower(df$violdesc), "insect|pest|parasite")
+are_insects_in_desc[is.na(are_insects_in_desc)] <- FALSE
+
+are_insects <- are_insects_in_comments | are_insects_in_desc
+df$insects <- as.numeric(are_insects)
+```
+
+
+```{r}
+df %>% 
+  filter(rodents==1)
+```
+
+
+
+
+The spatial patterns are similar to what we observed in total number of inspections dating back to 2006. However, the maximum number of violations per inspection has decreased.
+
+In our city exploration, we should focus on understanding the specific areas where violations—and the number of restaurants—are concentrated.
+
+
+---
+
+**Next steps**
+
+Building on common sense mapping, our primary focus will be on identifying issues related to rodents and trash.
+
+To enhance our analysis, it would be valuable to extract data from the free-text fields, specifically the violation descriptions and comments made by inspectors to the managers of the establishments. By encoding this qualitative data into our inspections dataset, we can uncover new patterns that go beyond purely quantitative measures. This approach will allow us to integrate more nuanced insights into our analysis and reveal underlying issues that may not be immediately evident from the numerical data alone.
+
+
+
+
+
+

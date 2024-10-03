@@ -1,0 +1,493 @@
+---
+title: "<span style='font-size:28px'>**Assignment 03: Revealing Knowledge** (draft)</style>"
+author: "<span style='font-size:20px'>**Boston Food Establishment Inspections Dataset**</style>"
+date: "Juan Cruz Ferreyra"
+output:
+  html_document:
+    code_folding: "hide"
+---
+
+<style>
+body {
+  text-align: justify;
+  font-size: 16px;}
+</style>
+
+```{r, echo=FALSE}
+library(knitr)
+knitr::opts_chunk$set(warning=FALSE, message=FALSE, echo=TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(stringr)
+library(sf)
+library(ggmap)
+library(tmap)
+library(tmaptools)
+library(osmdata)
+library(kableExtra)
+library(rlang)
+library(writexl)
+```
+
+```{r}
+format_table <- function(df) {
+  df <- df %>% 
+    kbl(align = "c", longtable = TRUE) %>% 
+    kable_styling(
+      bootstrap_options = c("striped", "condensed"),
+      full_width = TRUE,
+      font_size = 12) %>%
+    column_spec(1, width_min = "50%")
+  
+  return(df)
+}
+```
+
+
+***
+<br>
+
+**Context**
+
+This work is part of the graduate course [Big Data for Cities](https://ui.danourban.com/ "ui.danourban.com"), taught by Dan O'Brien at Northeastern University, Boston, MA. For more details, refer to the [first post](link_to_first_post "") of this series.
+
+Additionally, here is the [full list](link_to_full_list "") of posts for this series.
+
+***
+<br>
+
+**Viewing the dataset**
+
+```{r}
+# Load dataset
+main_path <- paste0(getwd(), "/..")
+df <- read.csv(paste0(main_path, "/data/resto_inspections_clean_02.csv"))
+df_inspections <- read.csv(paste0(main_path, "/data/resto_inspections_grouped_02.csv"))
+
+df <- df %>% 
+  mutate(
+    issdttm = ymd_hms(issdttm),
+    issdttm = ymd_hms(issdttm),
+    resultdttm = ymd_hms(resultdttm)
+    )
+
+df_inspections <- df_inspections %>% 
+  mutate(
+    issdttm = ymd_hms(issdttm),
+    issdttm = ymd_hms(issdttm),
+    resultdttm = ymd_hms(resultdttm)
+    )
+```
+
+In this post, we will locate inspections across Boston to gain some initial insights into the spatial distribution of restaurants and the prevalence of violations. This analysis will inform our city exploration, with a particular focus later on Roxbury, where we are collaborating with organizations this semester.
+
+```{r, include=FALSE}
+register_stadiamaps("4107f68c-0827-4b47-958d-89f9f1f37a58", write = FALSE)
+```
+
+```{r}
+bbox_boston <- c(
+  "left" = -71.195,
+  "bottom" = 42.230,
+  "right" = -70.955, 
+  "top" = 42.400
+)
+
+basemap_boston <- get_stadiamap(bbox=bbox_boston,
+                              maptype="stamen_terrain",
+                              zoom=12)
+```
+
+```{r height=500, include=FALSE}
+ggmap(basemap_boston) +
+  theme_void()
+```
+
+We plot the inspections based on their recorded coordinates, overlaying them on a map of Boston. This provides an initial impression of the density of establishments across different parts of the city.
+
+```{r}
+gdf_inspections <- df_inspections %>% 
+  filter(!(is.na(longitude) | is.na(latitude))) %>% 
+  st_as_sf(coords = c("longitude", "latitude"), crs = 4326)
+```
+
+```{r}
+ggmap(basemap_boston, darken = c(0.6, "white")) +
+  geom_sf(data=sample_n(gdf_inspections, 50000), color="#542788", shape=16, size=.5, alpha=0.1, inherit.aes=FALSE) +
+  theme_void()
+```
+
+We observe a high density of points in the area between Back Bay and downtown. In the surrounding neighborhoods, we still note an intermediate to high density. Moving west and south, the establishments are mainly clustered along avenues and major streets.
+
+We also confirm that the map's boundaries are reasonable, as they include all the establishments located in Boston. However, we notice some points that fall outside this bounding box.
+
+```{r}
+df_inspections$is_outbbox <- (
+    df_inspections$longitude < bbox_boston[["left"]] |
+    df_inspections$longitude > bbox_boston[["right"]] |
+    df_inspections$latitude < bbox_boston[["bottom"]] |
+    df_inspections$latitude > bbox_boston[["top"]]
+    )
+
+df_outbbox <- df_inspections %>% 
+  filter(is_outbbox)
+
+gdf_inspections <- df_inspections %>% 
+  filter(!(is.na(longitude) | is.na(latitude))) %>% 
+  st_as_sf(coords = c("longitude", "latitude"), crs = 4326)
+
+bbox_us <- c(
+  "left" = -90,
+  "bottom" = 30,
+  "right" = -66, 
+  "top" = 49
+)
+
+basemap_us <- get_stadiamap(bbox=bbox_us,
+                              maptype="stamen_terrain",
+                              zoom=4)
+
+ggmap(basemap_us, darken = c(0.6, "white")) +
+  geom_sf(data=sample_n(gdf_inspections, 50000), aes(color=is_outbbox), shape=16, size=2, alpha=1, inherit.aes=FALSE) +
+  scale_color_manual(values = c("orange", "red"), name = "Out of Boston") +
+  theme_void()
+```
+
+There are `r nrow(df_outbbox)` inspections with coordinates that are either missing or incorrectly placed in the ocean. This likely indicates a default position assigned to records without valid coordinates. The error could stem from data entry mistakes by inspectors or automated geocoding failures. Alternatively, the data may have been sourced from a database that contained these corrupted coordinates.
+
+We will now investigate these points further to identify any patterns and assess whether it's worth the effort to correct them.
+
+```{r}
+n_outbbox_address <- df_outbbox %>% 
+  pull(address) %>% 
+  unique() %>% 
+  length()
+```
+
+Among the `r nrow(df_outbbox)` inspections with incorrect coordinates, we found `r n_outbbox_address` unique addresses. Let’s now examine the types of food establishments that appear with corrupted locations.
+
+```{r}
+df_outbbox %>% 
+  count(descript) %>% 
+  format_table() %>% 
+  scroll_box()
+```
+
+Next, we analyze the most common keywords in the address field. This may provide insights into establishments with incorrect locations.
+
+```{r}
+df_outbbox %>%
+  mutate(address = tolower(gsub("V F W", "VFW", address))) %>% 
+  mutate(longest_word = sapply(str_split(address, " "), function(x) x[which.max(nchar(x))])) %>% 
+  count(longest_word) %>% 
+  arrange(desc(n)) %>% 
+  head(10) %>% 
+  format_table()
+```
+
+We observe several instances of "citywide"! What does this mean? We also notice keywords like "airport," "terminal," "Faneuil," and "legends," which likely refer to Logan Airport and TD Garden. These are not actual addresses, which explains their corrupted coordinates in the dataset.
+
+We can start addressing some of these errors. For instance, we can assign all records with "airport" to a central point in the parking zone, as we don’t need granular detail for that area.
+
+```{r}
+is_outbbox <- df_inspections$is_outbbox
+is_outbbox[is.na(is_outbbox)] <- TRUE
+
+is_airport <- str_detect(tolower(df_inspections$address), fixed("airport")) |
+  str_detect(tolower(df_inspections$address), fixed("logan"))
+is_airport[is.na(is_airport)] <- FALSE
+
+df_inspections$longitude[is_outbbox & is_airport] <- -71.020819
+df_inspections$latitude[is_outbbox & is_airport] <- 42.366652
+```
+
+Similarly, let’s confirm that "legends" refers to TD Garden and adjust its coordinates accordingly.
+
+```{r}
+df_outbbox %>% 
+  filter(str_detect(tolower(address), fixed("legends"))) %>% 
+  count(address) %>% 
+  arrange(desc(n)) %>% 
+  format_table()
+```
+
+```{r}
+is_legends <- str_detect(tolower(df_inspections$address), fixed("legends"))
+is_legends[is.na(is_legends)] <- FALSE
+
+df_inspections$longitude[is_outbbox & is_legends] <- -71.061460
+df_inspections$latitude[is_outbbox & is_legends] <- 42.365465
+```
+
+Next, let’s handle "Faneuil."
+
+```{r}
+df_outbbox %>% 
+  filter(str_detect(tolower(address), fixed("faneuil"))) %>% 
+  count(address) %>% 
+  arrange(desc(n)) %>% 
+  format_table()
+```
+
+```{r}
+is_faneuil <- str_detect(tolower(df_inspections$address), fixed("faneuil"))
+is_faneuil[is.na(is_faneuil)] <- FALSE
+
+df_inspections$longitude[is_outbbox & is_faneuil] <- -71.054868
+df_inspections$latitude[is_outbbox & is_faneuil] <- 42.360107
+```
+
+
+***
+
+After making these changes, we’ll check the updated ranking of the most common keywords in the address field.
+
+```{r}
+df_inspections$is_outbbox <- (
+    df_inspections$longitude < bbox_boston[["left"]] |
+    df_inspections$longitude > bbox_boston[["right"]] |
+    df_inspections$latitude < bbox_boston[["bottom"]] |
+    df_inspections$latitude > bbox_boston[["top"]]
+    )
+
+df_outbbox <- df_inspections %>% 
+  filter(is_outbbox)
+```
+
+```{r}
+df_outbbox %>%
+  mutate(address = tolower(gsub("V F W", "VFW", address))) %>% 
+  mutate(longest_word = sapply(str_split(address, " "), function(x) x[which.max(nchar(x))])) %>% 
+  count(longest_word) %>% 
+  arrange(desc(n)) %>% 
+  head(10) %>% 
+  format_table()
+```
+
+Let’s focus on the "citywide" category. Specifically, we’ll examine the types of establishments associated with this keyword in their address.
+
+```{r}
+df_outbbox %>% 
+  filter(str_detect(tolower(address), fixed("citywide"))) %>% 
+  count(descript) %>% 
+  arrange(desc(n)) %>% 
+  format_table()
+```
+
+Almost every mobile food walk-on establishment with corrupted coordinates has "citywide" in the address field. Since they don’t have fixed locations in Boston, we can assign them coordinates (0, 0) to easily identify them later.
+
+```{r}
+is_outbbox <- df_inspections$is_outbbox
+is_outbbox[is.na(is_outbbox)] <- TRUE
+
+is_citywide <- str_detect(tolower(df_inspections$address), fixed("citywide"))
+is_citywide[is.na(is_citywide)] <- FALSE
+
+is_mobile <- df_inspections$descript=="Mobile Food Walk On"
+
+df_inspections$longitude[is_outbbox & is_citywide & is_mobile] <- 0
+df_inspections$latitude[is_outbbox & is_citywide & is_mobile] <- 0
+```
+
+***
+
+What about the non-mobile establishments with "citywide" keyword?
+
+```{r}
+df_outbbox %>% 
+  filter(str_detect(tolower(address), fixed("citywide"))) %>% 
+  filter(descript!="Mobile Food Walk On") %>% 
+  count(businessname) %>% 
+  arrange(desc(n)) %>% 
+  format_table()
+```
+
+Interestingly, we also find establishments located on islands, as well as some tied to MBTA stations. Let’s check for other island-based businesses by searching for the keyword "island" in the business name or address fields among inspections with corrupted coordinates.
+
+```{r}
+df_outbbox %>% 
+  filter(str_detect(tolower(address), fixed("island")) | str_detect(tolower(businessname), fixed("island"))) %>% 
+  count(businessname, address) %>% 
+  arrange((desc(n))) %>% 
+  format_table()
+```
+
+Except for "Blue Island" business, the other records correspond to actual islands. We can manually assign these establishments their correct positions.
+
+```{r}
+is_outbbox <- df_inspections$is_outbbox
+is_outbbox[is.na(is_outbbox)] <- TRUE
+
+# Thompson
+is_thompson <- str_detect(tolower(df_inspections$businessname), fixed("thompson island"))
+is_thompson[is.na(is_thompson)] <- FALSE
+
+df_inspections$longitude[is_outbbox & is_thompson] <- -71.006902
+df_inspections$latitude[is_outbbox & is_thompson] <- 42.318418
+
+# Georges
+is_georges <- str_detect(tolower(df_inspections$address), fixed("georges island"))
+is_georges[is.na(is_georges)] <- FALSE
+
+df_inspections$longitude[is_outbbox & is_georges] <- -70.929850
+df_inspections$latitude[is_outbbox & is_georges] <- 42.319463
+  
+# Long
+is_long <- str_detect(tolower(df_inspections$address), fixed("long island"))
+is_long[is.na(is_long)] <- FALSE
+
+df_inspections$longitude[is_outbbox & is_long] <- -70.964495
+df_inspections$latitude[is_outbbox & is_long] <- 42.323244
+```
+
+```{r}
+df_inspections$is_outbbox <- (
+    df_inspections$longitude < bbox_boston[["left"]] |
+    df_inspections$longitude > bbox_boston[["right"]] |
+    df_inspections$latitude < bbox_boston[["bottom"]] |
+    df_inspections$latitude > bbox_boston[["top"]]
+    )
+
+df_outbbox <- df_inspections %>% 
+  filter(is_outbbox)
+```
+
+```{r}
+n_outbbox <- df_outbbox %>% 
+  filter(latitude!=0) %>% 
+  nrow()
+```
+
+We now have `r n_outbbox` inspections with unresolved coordinates. Notably, we have corrected almost half of the initially corrupted points with minimal effort. However, we’ve tackled the easiest cases—those with the most repeated addresses. 
+
+For now, we won’t modify any further records (though we can revisit this later and use geocoding to fix remaining addresses). Next, we’ll proceed with spatial joins to verify the neighborhood assigned to each inspection, and begin gaining insights into Roxbury.
+
+```{r}
+gdf_inspections <- df_inspections %>% 
+  filter(!(is.na(longitude) | is.na(latitude))) %>% 
+  st_as_sf(coords = c("longitude", "latitude"), crs = 4326)
+```
+
+
+We use the 2020 census neighborhoods, which are an approximation to real neighborhoods boundaries by grouping on census tracts. This will later allow us to relate information from both sources in future posts.
+
+```{r}
+neighs_NAD83 <- read_sf(paste0(
+    main_path, "/data/neighborhoods/Census2020_BG_Neighborhoods.shp"
+  ))
+```
+
+```{r}
+# Convert to mercator
+neighs <- neighs_NAD83 %>% 
+  st_transform(crs = 4326)
+```
+
+```{r}
+neighs %>% 
+  head(10) %>% 
+  format_table()
+```
+
+```{r}
+ggmap(basemap_boston, darken = c(0.6, "white")) +
+  geom_sf(data=neighs, fill = NA, color = "gray40", linewidth = .8, inherit.aes=FALSE) +
+  geom_sf(data=sample_n(gdf_inspections, 50000), color="#542788", shape=16, size=.5, alpha=0.05, inherit.aes=FALSE) +
+  theme_void()
+```
+
+Let’s perform the spatial join to assign a neighborhood name to each inspection based on its coordinates.
+
+```{r}
+neighs <- neighs %>% 
+  rename(neighborhood = BlockGr202) %>% 
+  select(neighborhood, geometry)
+
+gdf_inspections <- gdf_inspections %>% 
+  st_join(neighs)
+
+df_inspections <- st_set_geometry(gdf_inspections, NULL)
+
+set.seed(42)
+df_inspections %>% 
+  select(businessname, address, licenseno, resultdttm, total_fail, total_pass, n_records, neighborhood) %>% 
+  sample_n(10) %>% 
+  format_table() %>% 
+  scroll_box()
+```
+
+Now, let’s focus on Roxbury inspections to inform our city exploration task.
+
+```{r}
+gdf_roxbury <- neighs %>% 
+  filter(neighborhood == "Roxbury")
+```
+
+```{r}
+roxbury_geom <- as.data.frame(unique(st_coordinates(gdf_roxbury$geometry[[1]])))
+
+bbox_roxbury <- c(
+  "left" = min(roxbury_geom$X),
+  "bottom" = min(roxbury_geom$Y),
+  "right" = max(roxbury_geom$X),
+  "top" = max(roxbury_geom$Y)
+)
+
+basemap_roxbury <- get_stadiamap(bbox=bbox_roxbury,
+                              maptype="stamen_terrain",
+                              zoom=15)
+```
+
+```{r}
+gdf_inspections_roxbury <- gdf_inspections %>% 
+  filter(neighborhood == "Roxbury")
+
+gdf_inspections_roxbury_initial <- gdf_inspections_roxbury %>% 
+  filter(inspection_number == 1) %>% 
+  arrange(total_fail)
+```
+
+Next, we analyze the number of violations in the initial inspections of each series in Roxbury, which may guide us to potential violation clusters.
+
+```{r}
+ggmap(basemap_roxbury, darken = c(0.6, "white")) +
+  geom_sf(data=gdf_roxbury, fill = NA, color = "gray40", linewidth = .8, inherit.aes=FALSE) +
+  geom_sf(data=gdf_inspections_roxbury_initial, aes(color = total_fail), shape=16, size=1.25, alpha=.5, inherit.aes=FALSE) +
+  scale_color_distiller(palette = "Reds", direction = 1, name = "Violations") +
+  theme_void()
+```
+
+We now examine post-pandemic inspections from the years 2022, 2023, and 2024.
+
+```{r}
+gdf_inspections_roxbury_lately <- gdf_inspections_roxbury_initial %>% 
+  filter(resultdttm > ymd("2022-01-01")) %>% 
+  arrange(total_fail)
+
+ggmap(basemap_roxbury, darken = c(0.6, "white")) +
+  geom_sf(data=gdf_roxbury, fill = NA, color = "gray40", linewidth = .8, inherit.aes=FALSE) +
+  geom_sf(data=gdf_inspections_roxbury_lately, aes(color = total_fail), shape=16, size=1.25, alpha=.5, inherit.aes=FALSE) +
+  scale_color_distiller(palette = "Reds", direction = 1, name = "Violations") +
+  theme_void()
+```
+
+The spatial patterns are similar to what we observed in total number of inspections dating back to 2006. However, the maximum number of violations per inspection has decreased.
+
+In our city exploration, we should focus on understanding the specific areas where violations—and the number of restaurants—are concentrated.
+
+
+---
+
+**Next steps**
+
+Building on common sense mapping, our primary focus will be on identifying issues related to rodents and trash.
+
+To enhance our analysis, it would be valuable to extract data from the free-text fields, specifically the violation descriptions and comments made by inspectors to the managers of the establishments. By encoding this qualitative data into our inspections dataset, we can uncover new patterns that go beyond purely quantitative measures. This approach will allow us to integrate more nuanced insights into our analysis and reveal underlying issues that may not be immediately evident from the numerical data alone.
+
+
+
+
+
+

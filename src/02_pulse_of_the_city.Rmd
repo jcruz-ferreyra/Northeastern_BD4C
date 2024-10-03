@@ -1,0 +1,1084 @@
+---
+title: "<span style='font-size:28px'>**Assignment 02: Pulse of the City** (draft)</style>"
+author: "<span style='font-size:20px'>**Boston Food Establishment Inspections Dataset**</style>"
+date: "Juan Cruz Ferreyra"
+output:
+  html_document:
+    code_folding: "hide"
+---
+
+<style>
+body {
+  text-align: justify;
+  font-size: 16px;}
+</style>
+
+```{r, echo=FALSE}
+library(knitr)
+knitr::opts_chunk$set(warning=FALSE, message=FALSE, echo=TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(sf)
+library(ggmap)
+library(tmap)
+library(tmaptools)
+library(osmdata)
+library(kableExtra)
+library(rlang)
+library(writexl)
+```
+
+```{r}
+perc_adjuster <- function(df) {
+  if(sum(df$perc)!=1){
+    difference <- sum(df$perc) - 1
+    if(length(df$perc)>=3) {
+      df[3,"perc"] <- df[3,"perc"] - difference
+    } else {
+      df[1,"perc"] <- df[1,"perc"] - difference
+    }
+  }
+  return(df)
+}
+
+
+grouped_perc_adjuster <- function(df, col_a){
+  df_new <- df[0,]
+  
+  values <- unique(df[[col_a]])
+  for(v in values) {
+    df_temp <- df %>% 
+      filter(!!sym(col_a)==v)
+    
+    df_temp=perc_adjuster(df_temp)
+    
+    df_new=df_new %>% 
+      rbind(df_temp)
+  }
+  return(df_new)
+}
+
+
+calculate_sep <- function(ymax) {
+  multiples <- c(0.01, 0.02, 0.05, 0.1)
+  
+  options <- plyr::round_any(ymax/4, multiples)
+  sep <- options[max(which(ymax %/% options < 10))]
+  
+  return(sep)
+}
+
+
+calculate_lim <- function(ymax, sep) {
+  remainder <- ymax %% sep
+  if (remainder / sep > .75 ) {
+    n_sep <- ((ymax %/% sep) + 2)
+  } else {
+    n_sep <- ((ymax %/% sep) + 1)
+  }
+  
+  return(min(1, n_sep * sep))
+}
+
+
+plot_single_count <- function(
+    df,
+    column,
+    title=NULL,
+    subtitle=NULL,
+    t_size=10,
+    same_size=FALSE,
+    xtext=NULL,
+    ymax=NULL,
+    fill="#fdae61",
+    orient="v",
+    m=c(10, 5, 0, 5),
+    aspect_ratio=1,
+    include_labels=TRUE
+) {
+  if (orient=="v") {
+    text_hjust <- .5
+    text_vjust <- -.5
+  } else if (orient=="h") {
+    text_hjust <- -.25
+    text_vjust <- 0
+  }
+  
+  ymax <- ifelse(is.null(ymax), max(df$perc), ymax)
+  sep <- calculate_sep(ymax)
+  lim <- calculate_lim(ymax, sep)
+  
+  major_breaks <- seq(0, lim, by = sep)
+  minor_breaks <- major_breaks - (sep / 2)
+  
+  t_size <- ifelse(same_size, t_size, t_size)
+  st_size <- ifelse(same_size, t_size, t_size-1)
+  
+  ggp <- ggplot(df, aes(x=!!sym(column), y=perc)) +
+    scale_y_continuous(
+      expand=c(0,0,0,0),
+      limits=c(0, lim),
+      breaks=major_breaks,
+      labels=scales::percent(major_breaks)
+    ) +
+    geom_bar(stat="identity", alpha=1, width=.85, fill=fill) +
+    geom_hline(yintercept=minor_breaks, color="gray95", linetype="dotted", linewidth=.2) +
+    geom_hline(yintercept=major_breaks, color="gray95", linetype="dotted", linewidth=.5) +
+    geom_hline(yintercept=c(0), color="gray20", linewidth=1.5) +
+    labs(title=title,
+         subtitle=subtitle,
+         fill=NULL,
+         y=NULL,
+         x=xtext,
+         caption=NULL) +
+    theme_light() +
+    theme(plot.margin=margin(m[[1]], m[[2]], m[[3]], m[[4]]),
+          aspect.ratio=aspect_ratio,
+          panel.border=element_rect(colour="gray20"),
+          panel.grid.minor.x=element_blank(),
+          panel.grid.major.x=element_blank(),
+          panel.grid.minor.y=element_blank(),
+          panel.grid.major.y=element_blank(),
+          panel.background=element_blank(),
+          panel.ontop=FALSE,
+          plot.title=element_text(size=t_size,
+                                  face="bold",
+                                  hjust=.5,
+                                  vjust=4,
+                                  colour="gray20"),
+          plot.subtitle=element_text(size=st_size,
+                                     face="bold",
+                                     hjust=.5,
+                                     vjust=5,
+                                     colour="gray20"),
+          plot.caption=element_text(size=5,
+                                    hjust=.989,
+                                    colour="gray20"),
+          axis.title.x=element_text(size=8.5,
+                                    colour="gray20",
+                                    face="bold"),
+          axis.text.x=element_text(size=7.5,
+                                   colour="gray20",
+                                   angle=0),
+          axis.text.y=element_text(size=7,
+                                   colour="gray20"),
+          legend.position="none"
+    )
+  
+  if (orient=="h") {
+    ggp <- ggp + coord_flip()
+  }
+  
+  if (include_labels) {
+    ggp <- ggp +
+      geom_text(aes(label=scales::percent(perc, accuracy=0.1, decimal.mark=",")),
+              hjust=text_hjust, vjust=text_vjust, size=2.8, fontface="bold", color="gray20")
+  }
+  
+  return(ggp)
+}
+
+
+plot_cross_count <- function(
+    df,
+    column_a,
+    column_b,
+    title=NULL,
+    subtitle=NULL,
+    t_size=10,
+    xtext=NULL,
+    legend=NULL,
+    colors="#fdae61",
+    orient="v",
+    m=c(50, 5, 0, 5),
+    aspect_ratio=1
+) {
+
+  ggp <- ggplot(df) +
+    scale_y_continuous(
+      expand=c(0,0,0,0),
+      breaks=c(0,0.25,0.5,0.75,1),
+      labels=scales::percent(c(0,0.25,0.5,0.75,1))
+    ) +
+    geom_bar(
+      stat = "identity",
+      aes(x = !!sym(column_a), y = perc, fill = !!sym(column_b)),
+      width = .85,
+      position = position_fill()
+    ) +
+    geom_hline(yintercept=c(0,1), color="gray20", linewidth=1.5) +
+    geom_hline(yintercept=c(0.25,0.5,0.75), color="white", linetype="dashed") +
+    geom_text(
+      aes(
+        label = ifelse(perc<0.05, NA, (scales::percent(perc, accuracy=0.1, decimal.mark=","))),
+        x = !!sym(column_a),
+        y = perc,
+        group = !!sym(column_b)
+      ),
+      position = position_fill(vjust=.5),
+      size=2.8,
+      fontface="bold",
+      color="gray20"
+    ) +
+    scale_fill_manual(values = colors, name = legend) +
+    theme_light() +
+    labs(title = title,
+         subtitle=subtitle,
+         fill = NULL,
+         y = NULL,
+         x = xtext,
+         caption = NULL) +
+    theme(plot.margin=margin(m[[1]], m[[2]], m[[3]], m[[4]]),
+          aspect.ratio=aspect_ratio,
+          panel.border=element_blank(),
+          panel.grid.minor.x=element_line(color="gray60",
+                                          linetype="dashed"),
+          panel.grid.major.x=element_blank(),
+          panel.grid.minor.y=element_line(color="gray80",
+                                          linetype="dashed"),
+          panel.grid.major.y=element_line(color="gray60",
+                                          linetype="dashed"),
+          panel.background=element_blank(),
+          panel.ontop=FALSE,
+          plot.title=element_text(size=t_size,
+                                  face="bold",
+                                  hjust=.5,
+                                  vjust=4,
+                                  colour="gray20"),
+          plot.subtitle=element_text(size=t_size-1,
+                                     face="bold",
+                                     hjust=.5,
+                                     vjust=5,
+                                     colour="gray20"),
+          plot.caption=element_text(size=5,
+                                    hjust=.989,
+                                    colour="gray20"),
+          axis.title.x=element_text(size=8.5,
+                                    colour="gray20",
+                                    face="bold"),
+          axis.text.x=element_text(size=7.5,
+                                   colour="gray20",
+                                   angle=0),
+          axis.text.y=element_text(size=7,
+                                   colour="gray20"),
+          legend.position="top",
+          legend.title=element_text(size = 8,
+                                    colour = "gray20",
+                                    face="bold"),
+          legend.text=element_text(size = 7.5,
+                                   colour = "gray20",
+                                   margin=margin(c(0,0,0,0.5),unit="cm")),
+          legend.spacing.x=unit(.1,"cm"),
+          legend.key.size=unit(.35,"cm")
+    ) +
+    guides(fill=guide_legend(label.position="left", reverse=TRUE))
+  
+  
+  if (orient=="h") {
+    ggp <- ggp + coord_flip()
+  }
+  
+  return(ggp)
+}
+
+
+format_table <- function(df) {
+  df <- df %>% 
+    kbl(align = "c", longtable = TRUE) %>% 
+    kable_styling(
+      bootstrap_options = c("striped", "condensed"),
+      full_width = TRUE,
+      font_size = 12) %>%
+    column_spec(1, width_min = "50%")
+  
+  return(df)
+}
+```
+
+***
+<br>
+
+**Context**
+
+This work is part of the graduate course [Big Data for Cities](https://ui.danourban.com/ "ui.danourban.com"), taught by Dan O'Brien at Northeastern University, Boston, MA. For more details, refer to the [first post](link_to_first_post "") of this series.
+
+Additionally, here is the [full list](link_to_full_list "") of posts for this series.
+
+***
+<br>
+
+**Transforming the dataset**
+
+In the previous post, we explored and analyzed the dataset, uncovering one of the most interesting findings: each individual record represents a single violation, while each inspection can consist of multiple records. Viewing the data at different levels can unlock new insights, which may be highly relevant to our task. In this case, aggregating at the inspection level seems natural, as we can view both individual violations and entire inspections as distinct units. Furthermore, the same way violations are grouped within an inspection, we can also link different inspections as part of a series, with a main inspection and any necessary follow-ups.
+
+The aggregation process is valuable because it enables us to merge records with shared attributes across certain columns, while also generating new variables from the transformed data. A simple outcome of this process would be calculating the total number of records linked to each inspection. Additionally, we can convert categorical variables into numerical form by counting their frequency of occurrence.
+
+However, it’s important to note that aggregation inevitably loses some of the granular details found in individual records. Therefore, it’s not only useful to organize the data at the inspection level, but also to maintain the links between aggregated inspections and the original records that make them up. This way, we will have two sources of information: the newly aggregated dataset of inspections and the original dataset of violations. Preserving that connection could prove insightful for further analysis.
+
+```{r}
+# Load dataset
+main_path <- paste0(getwd(), "/..")
+df <- read.csv(paste0(main_path, "/data/resto_inspections_clean_01.csv"))
+
+# Load the metadata generated in the previous assignment
+df_metadata <- read.csv(paste0(main_path, "/data/resto_inspections_metadata.csv"))
+
+df <- df %>% 
+  mutate(
+    issdttm = ymd_hms(issdttm),
+    issdttm = ymd_hms(issdttm),
+    resultdttm = ymd_hms(resultdttm)
+    )
+```
+
+We analyze the columns related to individual violation records to determine which ones should be included in the summarization process. Our focus will be on categorical columns with low cardinality, as processing variables with free-text input requires more complex analysis. This deeper investigation may become feasible later, particularly when we narrow down the dataset through temporal or spatial filters.
+
+```{r}
+table01 <- df_metadata %>% 
+  filter(RefersTo == "violation record")
+
+filename <- "/table01"
+write_xlsx(table01, paste0(main_path, "/results/02_pulse_of_the_city", filename, ".xlsx"))
+
+table01 %>% 
+  format_table() %>% 
+  scroll_box()
+```
+
+Based on the metadata of the columns with information related to individual violation records, we select the level of violation and the status as the columns to encode into our aggregated dataset in this first step. Lets see what are the categories of each of the columns, and the number of appearances:
+
+```{r}
+table02 <- df %>% 
+  count(viol_status)
+
+filename <- "/table02"
+write_xlsx(table02, paste0(main_path, "/results/02_pulse_of_the_city", filename, ".xlsx"))
+
+table02 %>% 
+  format_table() %>% 
+  scroll_box()
+```
+
+We can observe that violation status is a binary column with fail or pass values based on the detection or resolvation of the issue. We can also note that we have a bunch of records without value for that variable.
+
+We can observe now the categories for the violation level column:
+
+```{r}
+table03 <- df %>% 
+  count(viol_level)
+
+filename <- "/table03"
+write_xlsx(table03, paste0(main_path, "/results/02_pulse_of_the_city", filename, ".xlsx"))
+
+table03 %>% 
+  format_table() %>% 
+  scroll_box()
+```
+
+
+The violation level is encoded by severity, ranging from '1' for minor violations to '3' for critical ones. We can find also a somewhat strange 'None' category that is different from NA values (empty ones). Lets see what kind of violations are encoded under that cetegory:
+
+```{r}
+table04 <- df %>% 
+  filter(viol_level == "None") %>% 
+  count(violation) %>% 
+  arrange(desc(n))
+
+filename <- "/table04"
+write_xlsx(table04, paste0(main_path, "/results/02_pulse_of_the_city", filename, ".xlsx"))
+
+table04 %>% 
+  format_table() %>% 
+  scroll_box()
+```
+
+We can observe just 3 different types of violations, with codes 'L1', 'L2', and '590.010(A)', are registered with 'None' severity level in our dataset. Now we can select a subset of those violations and see the comments aiming to resolve the issue done by the inspector to the manager of the establishment, to see what those violation codes represent.
+
+```{r}
+set.seed(42)
+
+table05 <- df %>% 
+  filter(viol_level == "None") %>% 
+  select(comments) %>% 
+  sample_n(10)
+
+filename <- "/table05"
+write_xlsx(table05, paste0(main_path, "/results/02_pulse_of_the_city", filename, ".xlsx"))
+
+table05 %>% 
+  format_table() %>% 
+  scroll_box()
+```
+
+From the sample, it seems the 'None' violation level is related to regulations that the establishment must accomplish. In the sample above we observe violations regarding to unpayment of the health permit, unavailability of information to the customers regarding permits or allergen disclosures, and the ausence of choke safe employee.
+
+Before aggregating the dataframe at inspection level we also need to verify the reason of the ausence of values for the severity level column in many records. Thats why we look at the types of violations that has associated NA values for the severity level column.
+
+```{r}
+table06 <- df %>% 
+  filter(is.na(viol_level)) %>% 
+  count(violation)
+
+filename <- "/table06"
+write_xlsx(table06, paste0(main_path, "/results/02_pulse_of_the_city", filename, ".xlsx"))
+
+table06 %>% 
+  format_table() %>% 
+  scroll_box()
+```
+
+Records with an 'NA' level almost always have an 'NA' description, suggesting these entries might pertain to the overall inspection rather than individual violations. When an initial inspection results in a "Pass" status due to no violations found, it is recorded as such, often with empty values in violation-related columns. Additionally, inspectors may include a final record to indicate the overall inspection status in inspections where some previous issues were resolved, even when not strictly necessary. In some cases, a follow-up inspection is recorded as a single "Pass" entry without detailing individual violations with their status set to pass.
+
+Overall, the dataset appears well-curated, likely due to training provided to those digitizing the records, whether inspectors or specialized personnel. However, variations in recording practices are common in datasets like this, where observations are entered by individuals who may occasionally misinterpret guidelines or make human errors.
+
+As we plan to include the binary violation status variable, we also need to verify the records where individual violations have 'NA' values in this column. To ensure accuracy, we will focus exclusively on rows with a valid severity level, filtering out only those records that pertain to actual violations. This will help us avoid including non-violation entries, ensuring cleaner data for analysis.
+
+```{r}
+table07 <- df %>% 
+  filter(is.na(viol_status) & !is.na(viol_level)) %>% 
+  arrange(desc(resultdttm)) %>% 
+  select(businessname, result, resultdttm, viol_level, viol_status) %>% 
+  head(5)
+
+filename <- "/table07"
+write_xlsx(table07, paste0(main_path, "/results/02_pulse_of_the_city", filename, ".xlsx"))
+
+table07 %>% 
+  format_table() %>% 
+  scroll_box()
+```
+
+There are some missing values in the viol_status field. We will revisit these later, but for now, we can set them aside since most are from 2013 or earlier, with only two instances in the last decade. This suggests that such recording errors have been addressed over time and are no longer an issue.
+
+***
+
+Now, let’s aggregate the data at the inspection level, retaining key information such as the total number of records per inspection and the count of fail/pass violations for each severity level. While this process will result in a loss of detail regarding individual records, we can encode relevant data back into the aggregated dataset later.
+
+```{r}
+violation_cols <- df_metadata %>% 
+  filter(RefersTo=="violation record") %>% 
+  pull(ColumnName)
+
+inspection_cols <- setdiff(names(df), violation_cols)
+
+df <- df %>%
+  mutate(critical_fail = ifelse(viol_level == "3" & viol_status == "Fail", 1, 0),
+         moderate_fail = ifelse(viol_level == "2" & viol_status == "Fail", 1, 0),
+         minor_fail = ifelse(viol_level == "1" & viol_status == "Fail", 1, 0),
+         other_fail = ifelse(viol_level == "None" & viol_status == "Fail", 1, 0),
+         critical_pass = ifelse(viol_level == "3" & viol_status == "Pass", 1, 0),
+         moderate_pass = ifelse(viol_level == "2" & viol_status == "Pass", 1, 0),
+         minor_pass = ifelse(viol_level == "1" & viol_status == "Pass", 1, 0),
+         other_pass = ifelse(viol_level == "None" & viol_status == "Pass", 1, 0),
+         )
+
+df_inspections <- df %>%
+  group_by(across(all_of(inspection_cols))) %>%
+  summarise(
+    n_records = n(),
+    critical_fail = sum(critical_fail, na.rm = TRUE),
+    moderate_fail = sum(moderate_fail, na.rm = TRUE),
+    minor_fail = sum(minor_fail, na.rm = TRUE),
+    other_fail = sum(other_fail, na.rm = TRUE),
+    critical_pass = sum(critical_pass, na.rm = TRUE),
+    moderate_pass = sum(moderate_pass, na.rm = TRUE),
+    minor_pass = sum(minor_pass, na.rm = TRUE),
+    other_pass = sum(other_pass, na.rm = TRUE),
+    min_id = min(X_id, na.rm = TRUE),
+    max_id = max(X_id, na.rm = TRUE),
+    ) %>% 
+  ungroup() %>% 
+  mutate(total_fail = critical_fail + moderate_fail + minor_fail + other_fail) %>% 
+  mutate(total_pass = critical_pass + moderate_pass + minor_pass + other_pass)
+```
+
+The resulting number of records in the aggregated dataset is **`r nrow(df_inspections)`**.
+
+Now, let’s examine the structure of the new dataset by evaluating the same data we inspected in the previous [blog post](link_to_full_list "") related to a series of inspections conducted in Chez Tata restaurant during 2014:
+
+```{r}
+set.seed(42)
+
+table08 <- df_inspections %>% 
+  filter(businessname == "Chez Tata Restaurant") %>% 
+  filter(resultdttm >= ymd("2014-08-15") & resultdttm <= ymd("2022-03-16")) %>% 
+  select(
+    businessname,
+    licstatus,
+    licensecat,
+    result,
+    resultdttm,
+    minor_fail,
+    moderate_fail,
+    critical_fail,
+    minor_pass,
+    moderate_pass,
+    critical_pass,
+    total_fail,
+    total_pass,
+    n_records
+    )
+
+filename <- "/table08"
+write_xlsx(table08, paste0(main_path, "/results/02_pulse_of_the_city", filename, ".xlsx"))
+
+table08 %>% 
+  format_table() %>% 
+  scroll_box(width = "100%")
+```
+
+As seen in the previous post, the pattern of inspections at the mentioned restaurant follows a clear progression across three visits. The first inspection identified just one minor violation, prompting the inspector to schedule a follow-up a few weeks later. During the second visit, two minor violations were logged—one from the initial inspection and a newly discovered one. Finally, the third inspection resolved both issues, earning the establishment a passing status. Additionaly we observe the record for the non-required inspection scheduled for 2022.
+
+***
+<br>
+
+**Solving issues**
+
+Next, we’ll dive into the inspection dataset to identify potential inconsistencies. In this version of the data, violation records are grouped according to key columns related to the inspection itself, the business administration, and the establishment’s location. Since all these fields should be consistent for inspections conducted at the same establishment, we expect that by aggregating the data using the essential columns—such as business name, owner, address, and inspection date—we should avoid any duplicate rows. Additionally, we’ll include the inspection result in our grouping criteria to subsequently ensure no inspection is mistakenly recorded with conflicting outcomes.
+
+```{r}
+count_repeated_inspections <- df_inspections %>% 
+  group_by(businessname, legalowner, address, resultdttm, result) %>% 
+  summarise(count = n()) %>% 
+  arrange(desc(count))
+
+table09 <- count_repeated_inspections %>% 
+  head(5)
+
+filename <- "/table09"
+write_xlsx(table09, paste0(main_path, "/results/02_pulse_of_the_city", filename, ".xlsx"))
+
+table09 %>% 
+  format_table() %>% 
+  scroll_box()
+```
+
+We noticed that several inspections are recorded for the same establishment on the same date. However, an interesting pattern emerges when we examine the business name field: at least the first five rows pertain to markets or festivals. It's possible that different food vendors within these larger entities are being logged under the same business name.
+
+This observation suggests that using the business name alone might not be the most reliable way to identify unique establishments. A more accurate identifier could be the business license number. Let’s test this by grouping the data by license number and inspection date to see if we can better distinguish individual establishments.
+
+```{r}
+count_repeated_inspections <- df_inspections %>% 
+  group_by(licenseno, resultdttm, result) %>% 
+  summarise(count = n()) %>% 
+  arrange(desc(count))
+
+table10 <- count_repeated_inspections %>% 
+  head(5)
+
+filename <- "/table10"
+write_xlsx(table10, paste0(main_path, "/results/02_pulse_of_the_city", filename, ".xlsx"))
+
+table10 %>% 
+  format_table() %>% 
+  scroll_box()
+```
+
+Initially, we assumed that the business name and address fields would be sufficient to uniquely identify each food establishment. However, we quickly discovered that this approach was flawed. Instead, the license number has proven to be a tailor-made unique identifier. This insight is crucial for the accuracy of our future analyses.
+
+Building on this discovery, we can now pinpoint follow-up inspections more accurately. Typically, follow-ups occur within a few weeks, but by refining this assumption, we can establish an exact time frame. This would allow us to link consecutive inspections, forming a comprehensive inspection series for each establishment. Such an approach will be invaluable as we aim to trace how issues evolve and get resolved over time, leading to deeper insights into food safety practices.
+
+To tackle this challenge, we first focus on inspections where the outcome indicates the need for a follow-up. These include failure statuses and cases where the establishment was closed due to violations. In contrast, inspections with a "Pass" or "Filed" result generally do not prompt a follow-up.
+
+Using this approach, we then analyze the distribution of inspections conducted after a failed inspection at the same establishment, focusing on the time elapsed between them.
+
+```{r}
+nonreq_results <- c("HE_NotReq", "HE_OutBus", "DATAERR")
+
+df_inspections_req <- df_inspections %>% 
+  filter(!(result%in%nonreq_results))
+df_inspections_nonreq <- df_inspections %>% 
+  filter(result%in%nonreq_results)
+
+df_inspections_req <- df_inspections_req %>% 
+  arrange(licenseno, resultdttm)
+
+df_inspections_req$same_as_prev <- df_inspections_req$licenseno == lag(df_inspections_req$licenseno)
+df_inspections_req$time_diff <- df_inspections_req$resultdttm - lag(df_inspections_req$resultdttm)
+df_inspections_req$previous_fail <- lag(df_inspections_req$result)%in%c("HE_Fail", "HE_FailExt","HE_Hearing", "HE_Closure", "HE_TSOP", "HE_VolClos")
+
+df_inspections_req <- df_inspections_req %>% 
+  mutate(time_diff = seconds_to_period(time_diff))
+```
+
+```{r}
+count_followup_intervals <- data.frame(days = character(), n = integer(), stringsAsFactors = FALSE)
+for (i in seq(0, 150, 30)) {
+  n_inspections <- df_inspections_req %>% 
+    filter(same_as_prev & previous_fail & time_diff > ddays(i) & time_diff < ddays(i + 30)) %>% 
+    nrow()
+  
+  days_label <- paste0(i, "-", i + 29)
+  
+  count_followup_intervals <- count_followup_intervals %>% 
+    add_row(days = days_label, n = n_inspections)
+}
+
+count_followup_intervals <- count_followup_intervals %>% 
+  mutate(perc=round(n/sum(n), 3)) %>%
+  mutate(days = factor(days, levels = days)) %>%
+  perc_adjuster()
+
+plot_single_count(
+  count_followup_intervals,
+  "days",   
+  title="Distribution of potential follow-up inspections",
+  subtitle="based on the time elapsed between them and prior one",
+  xtext = "Interval (days)",
+  m=c(20, 5, 10, 5),
+  fill = "#74add1",
+  include_labels = FALSE
+  ) +
+  geom_text(aes(label=scales::percent(perc, accuracy=0.1, decimal.mark=",")),
+              hjust=.5, vjust=-.5, size=2, fontface="bold", color="gray20")
+  
+```
+
+We observe that nearly 97% of potential follow-up inspections occur within a month of the previous inspection. As we extend the time frame, the likelihood of mistakenly interpreting a new, unrelated inspection as a follow-up increases. For instance, an initial inspection might result in failure, but no follow-up occurs. Later, a new series of inspections could begin due to a scheduled appointment, and we don’t want to mistakenly link these two distinct series.
+
+By limiting follow-up inspections to those conducted within two months of a failed inspection, we can confidently capture true follow-ups. This approach ensures we're accounting for 98.5% of potential follow-ups, as shown in the graph, striking a solid balance between precision and recall.
+
+One way to further improve accuracy in linking inspections to their follow-ups would be to compare the specific types of violations and inspector comments between the initial inspection and the potential follow-up. This could help confirm if they are truly related. However, given that we are already achieving high accuracy, pursuing this additional step at this stage may not be the most strategic use of time or resources.
+
+We can now proceed to assign each inspection its position in the series by applying the criterion that follow-ups must occur within two months of a previous failed inspection.
+
+```{r}
+df_inspections_req$first_inspection <- (!(
+  df_inspections_req$same_as_prev &
+  df_inspections_req$time_diff < ddays(60) &
+  df_inspections_req$previous_fail
+)) %>% 
+  replace_na(TRUE)
+
+df_inspections_req <- df_inspections_req %>%
+  mutate(inspection_number = ifelse(first_inspection, 1, NA)) %>%  # Start with 1 where first_inspection is TRUE
+  mutate(series = cumsum(first_inspection)) %>%  # Create a series identifier
+  group_by(series) %>%
+  mutate(inspection_number = ifelse(is.na(inspection_number), row_number(), inspection_number)) %>%
+  ungroup() %>%
+  select(-same_as_prev, -time_diff, -previous_fail, -first_inspection, -series)  # Remove the temporary series column
+
+df_inspections_nonreq$inspection_number <- 0
+
+df_inspections <- df_inspections_req %>% 
+  rbind(df_inspections_nonreq)
+```
+
+```{r}
+table11 <- df_inspections %>% 
+  filter(businessname == "Chez Tata Restaurant") %>% 
+  filter(resultdttm >= ymd("2014-08-15") & resultdttm <= ymd("2022-03-16")) %>% 
+  select(
+    businessname,
+    result,
+    resultdttm,
+    total_fail,
+    total_pass,
+    n_records,
+    inspection_number
+    )
+
+filename <- "/table11"
+write_xlsx(table11, paste0(main_path, "/results/02_pulse_of_the_city", filename, ".xlsx"))
+
+table11 %>% 
+  format_table() %>% 
+  scroll_box()
+```
+
+Using the same sample as before and focusing only on the necessary columns, we can observe that the process accurately assigns the position in the series of inspections conducted at Chez Tata restaurant in 2014.
+
+***
+<br>
+
+**Visualizing dataset**
+
+Once we have procesed the aggregated dataset we can start geting some insights as inspection level from it. First, we create a bar graph to visualize the relative frequency for each of the possible overall outcomes of the restaurant inspections in the first inspection of the series, it is, without taking follow-up inspections into account. Neither we consider inspections that were not carried out.
+
+```{r}
+count_results <- df_inspections %>% 
+  filter(inspection_number==1) %>% 
+  count(result) %>% 
+  arrange(desc(n)) %>% 
+  mutate(perc=round(n/sum(n), 3)) %>%
+  mutate(result = ifelse(perc < 0.04, "other", result)) %>%
+  group_by(result) %>%
+  summarise(
+    n = sum(n),
+    perc = round(sum(perc), 3)
+  ) %>%
+  arrange(desc(n)) %>% 
+  mutate(result = factor(result, levels = result)) %>% 
+  perc_adjuster()
+
+plot_single_count(
+  count_results,
+  "result",   
+  title="Distribution of results in initial inspections",
+  same_size = TRUE,
+  m=c(20, 5, 10, 5)
+  )
+```
+
+We observe that more than half of the initial inspections result in a fail status, while slightly under one-third receive a pass on the first attempt. Additionally, almost 15% of the first inspections conclude with a filed status, indicating that violations were found but didn’t warrant a follow-up.
+
+Given that the dataset spans from 2006 to the present, we’ll visualize this data by year to check if these trends have shifted or remained consistent over time. We’ll exclude the 2006 data due to its low sample size.
+
+```{r}
+count_results_year <- df_inspections %>% 
+  filter(inspection_number==1 & !(result%in%nonreq_results)) %>% 
+  mutate(result = ifelse(!(result%in%c("HE_Fail", "HE_Pass", "HE_Filed")), "other", result))
+
+count_results_year <- count_results_year %>% 
+  mutate(year = year(resultdttm)) %>% 
+  filter(year>2006) %>% 
+  group_by(year, result) %>% 
+  summarise(n = n()) %>% 
+  ungroup() %>% 
+  filter(!(is.na(year)))
+
+count_total <- count_results_year %>%
+  group_by(year) %>% 
+  summarise(total = sum(n)) %>% 
+  ungroup()
+
+count_results_year <- count_results_year %>% 
+  left_join(count_total, by="year") %>% 
+  mutate(perc = n / total)
+
+count_results_year <- grouped_perc_adjuster(count_results_year, "year")
+```
+
+```{r}
+color_var <- c(
+    "HE_Pass"="#74add1",
+    "HE_Filed"="#fee090",
+    "HE_Fail"="#f46d43",
+    "other"="gray40"
+  )
+
+count_results_year <- count_results_year %>% 
+  mutate(result = factor(result, levels=names(color_var))) %>% 
+  mutate(year = as.character(year))
+
+plot_cross_count(
+    df=count_results_year,
+    column_a="year",
+    column_b="result",
+    title="Distribution of results in initial inspections",
+    subtitle="across years from 2007 to 2024",
+    t_size=10,
+    xtext=NULL,
+    legend=NULL,
+    colors=color_var,
+    orient="h",
+    m=c(10, 10, 5, 0),
+    aspect_ratio=.4
+)
+```
+
+Despite some year-to-year variability, the pattern appears relatively stable. The percentage of failed inspections generally fluctuates between 50% and 60%, with a few exceptions, while pass rates hover around 26% to 33%. Notably, there’s a visible decline in the proportion of filed inspections in the past three years. However, to determine whether these changes are statistically significant, further testing would be required—something beyond the scope of this post.
+
+***
+
+Continuing our analysis of initial inspections in Boston over the dataset’s time span, we now focus on the distribution of violations recorded for those initial inspections that resulted in a fail status.
+
+```{r}
+df_inspections_fail <- df_inspections %>% 
+  filter(inspection_number==1 & result=="HE_Fail" & !is.na(resultdttm))
+
+df_inspections_fail <- df_inspections_fail %>% 
+  mutate(total_fail_bins = ifelse(total_fail>=20, "20+", total_fail))
+
+bins_levels <- c(c(0:19), "20+")
+
+count_total_fail <- df_inspections_fail %>% 
+  count(total_fail_bins) %>%
+  mutate(total_fail_bins = factor(total_fail_bins, levels = bins_levels)) %>%  
+  mutate(perc=round(n/sum(n), 3)) %>%
+  perc_adjuster()
+
+plot_single_count(
+  count_total_fail,
+  fill="#d73027",
+  "total_fail_bins",   
+  title="Distribution of number of violations",
+  subtitle="for initial inspections with fail status",
+  same_size = TRUE,
+  m=c(20, 5, 10, 5),
+  include_labels = FALSE
+  )
+```
+
+Interestingly, the distribution of violations resembles a Poisson distribution, where each inspection represents the unit of time, and the number of violations acts as the event being modeled. This similarity suggests that most failed inspections involve a small number of violations, with fewer instances of multiple violations recorded in a single inspection, aligning well with the Poisson distribution's properties.
+
+By analyzing the plot, we notice that many initial inspections with a fail status show zero recorded violations. Some of these could be due to inspectors registering only the overall inspection status without properly logging each violation. However, even more puzzling is the presence of inspections with numerous records that still show zero violations with a fail status. Let's take a closer look at a couple of these cases.
+
+```{r}
+table12 <- df_inspections_fail %>% 
+  filter(total_fail == 0 & n_records > 1 & !(is.na(resultdttm))) %>% 
+  select(licenseno, resultdttm, total_fail, n_records) %>% 
+  head(2)
+
+filename <- "/table12"
+write_xlsx(table12, paste0(main_path, "/results/02_pulse_of_the_city", filename, ".xlsx"))
+
+table12 %>% 
+  format_table() %>% 
+  scroll_box()
+```
+
+We identified two inspections, among many others, that have zero fail violations, despite having multiple records. Delving into the violations dataset to uncover the issue.
+
+```{r}
+table13 <- df %>% 
+  filter(licenseno==17611	& resultdttm==ymd_hms("2007-06-05 19:12:00")) %>% 
+  select(licenseno, result, resultdttm, violdesc, viol_level, viol_status)
+
+filename <- "/table13"
+write_xlsx(table13, paste0(main_path, "/results/02_pulse_of_the_city", filename, ".xlsx"))
+
+table13 %>% 
+  format_table() %>% 
+  scroll_box()
+```
+
+In the first case, we see that the violation status field is empty. As a result, the algorithm designed to count violations failed to recognize them as violations with a fail status.
+
+```{r}
+table14 <- df %>% 
+  filter(licenseno==18025	& resultdttm==ymd_hms("2019-03-05 13:17:07")) %>% 
+  select(licenseno, result, resultdttm, violdesc, viol_level, viol_status)
+
+filename <- "/table14"
+write_xlsx(table14, paste0(main_path, "/results/02_pulse_of_the_city", filename, ".xlsx"))
+
+table14 %>% 
+  format_table() %>% 
+  scroll_box()
+```
+
+In the second case, all violations were marked with a pass status, yet the inspection was flagged as a fail. Since this inspection was the first in a series, we can reasonably infer that the status was incorrectly recorded, either by the inspector or during data digitization.
+
+These cases highlight the importance of verifying data quality, as mislabeling can lead to inaccurate analyses.
+
+***
+
+Given that we've already identified some data inconsistencies, it seems reasonable to attempt to correct them—even with the risk of introducing a few minor errors in the process. For example, while we may assume that the mistake occurred in the violation status field, it’s possible the real error lies in the overall inspection status. However, such a case would be unlikely, as it's unusual for initial inspections to log violations with a pass status.
+
+A quick way to address these issues would be to apply a blanket correction: if an initial inspection has an overall fail status, and all recorded violations either have a pass status or NA value, we automatically update the violation statuses to fail. This process is applied exclusively to inspections with a valid inspection date, as without a valid date, it's nearly impossible to determine their position within a sequence, making it unfeasible to identify if they are truly the first in a series. Thus, only inspections with reliable date information are eligible for this correction, ensuring consistency and avoiding potential misclassification in our analysis. While this method might not be flawless, it aligns with the expectation that violations in failed initial inspections should reflect the same status. This approach provides a practical and efficient solution to resolve these inconsistencies, improving the overall accuracy of the dataset for future analysis.
+
+```{r}
+inspections_to_change <- df_inspections %>% 
+  filter(
+    inspection_number == 1 &
+    result == "HE_Fail" &
+    total_fail == 0 &
+    !(is.na(resultdttm))
+  ) %>% 
+  select(licenseno, resultdttm) %>% 
+  mutate(change = 1)
+
+df <- df %>% 
+  left_join(inspections_to_change, by=c("licenseno", "resultdttm")) %>% 
+  mutate(change = ifelse(is.na(change), 0, change))
+
+df[df$change==1, "viol_status"] <- "Fail"
+
+df <- df %>% 
+  select(-change)
+```
+
+```{r include=FALSE}
+write.csv(df, paste0(main_path, "/data/resto_inspections_clean_02.csv"), row.names = FALSE)
+```
+
+```{r}
+df <- df %>%
+  mutate(critical_fail = ifelse(viol_level == "3" & viol_status == "Fail", 1, 0),
+         moderate_fail = ifelse(viol_level == "2" & viol_status == "Fail", 1, 0),
+         minor_fail = ifelse(viol_level == "1" & viol_status == "Fail", 1, 0),
+         other_fail = ifelse(viol_level == "None" & viol_status == "Fail", 1, 0),
+         critical_pass = ifelse(viol_level == "3" & viol_status == "Pass", 1, 0),
+         moderate_pass = ifelse(viol_level == "2" & viol_status == "Pass", 1, 0),
+         minor_pass = ifelse(viol_level == "1" & viol_status == "Pass", 1, 0),
+         other_pass = ifelse(viol_level == "None" & viol_status == "Pass", 1, 0),
+         )
+
+df_inspections <- df %>%
+  group_by(across(all_of(inspection_cols))) %>%
+  summarise(
+    n_records = n(),
+    critical_fail = sum(critical_fail, na.rm = TRUE),
+    moderate_fail = sum(moderate_fail, na.rm = TRUE),
+    minor_fail = sum(minor_fail, na.rm = TRUE),
+    other_fail = sum(other_fail, na.rm = TRUE),
+    critical_pass = sum(critical_pass, na.rm = TRUE),
+    moderate_pass = sum(moderate_pass, na.rm = TRUE),
+    minor_pass = sum(minor_pass, na.rm = TRUE),
+    other_pass = sum(other_pass, na.rm = TRUE),
+    min_id = min(X_id, na.rm = TRUE),
+    max_id = max(X_id, na.rm = TRUE),
+    ) %>% 
+  ungroup() %>% 
+  mutate(total_fail = critical_fail + moderate_fail + minor_fail + other_fail) %>% 
+  mutate(total_pass = critical_pass + moderate_pass + minor_pass + other_pass)
+```
+
+```{r}
+nonreq_results <- c("HE_NotReq", "HE_OutBus", "DATAERR")
+
+df_inspections_req <- df_inspections %>% 
+  filter(!(result%in%nonreq_results))
+df_inspections_nonreq <- df_inspections %>% 
+  filter(result%in%nonreq_results)
+
+df_inspections_req <- df_inspections_req %>% 
+  arrange(licenseno, resultdttm)
+
+df_inspections_req$same_as_prev <- df_inspections_req$licenseno == lag(df_inspections_req$licenseno)
+df_inspections_req$time_diff <- df_inspections_req$resultdttm - lag(df_inspections_req$resultdttm)
+df_inspections_req$previous_fail <- lag(df_inspections_req$result)%in%c("HE_Fail", "HE_FailExt","HE_Hearing", "HE_Closure", "HE_TSOP", "HE_VolClos")
+
+df_inspections_req <- df_inspections_req %>% 
+  mutate(time_diff = seconds_to_period(time_diff))
+```
+
+```{r}
+df_inspections_req$first_inspection <- (!(
+  df_inspections_req$same_as_prev &
+  df_inspections_req$time_diff < ddays(60) &
+  df_inspections_req$previous_fail
+)) %>% 
+  replace_na(TRUE)
+
+df_inspections_req <- df_inspections_req %>%
+  mutate(inspection_number = ifelse(first_inspection, 1, NA)) %>%  # Start with 1 where first_inspection is TRUE
+  mutate(series = cumsum(first_inspection)) %>%  # Create a series identifier
+  group_by(series) %>%
+  mutate(inspection_number = ifelse(is.na(inspection_number), row_number(), inspection_number)) %>%
+  ungroup() %>%
+  select(-same_as_prev, -time_diff, -previous_fail, -first_inspection, -series)  # Remove the temporary series column
+
+df_inspections_nonreq$inspection_number <- 0
+
+df_inspections <- df_inspections_req %>% 
+  rbind(df_inspections_nonreq)
+```
+
+The number of inspections corrected through this process is `r nrow(inspections_to_change)`. With these adjustments made, we can now plot the distribution of the number of violations for initial inspections in the curated dataset. However, for this plot, we will exclude those initial inspections where the inspector did not log individual violations and only recorded an overall status, leaving the fields related to specific violations empty. 
+
+```{r}
+df_inspections_fail <- df_inspections %>% 
+  filter(inspection_number==1 & result=="HE_Fail" & !is.na(resultdttm) & !(total_fail==0 & n_records==1))
+
+df_inspections_fail <- df_inspections_fail %>% 
+  mutate(total_fail_bins = ifelse(total_fail>=20, "20+", total_fail))
+
+bins_levels <- c(c(0:19), "20+")
+
+count_total_fail <- df_inspections_fail %>% 
+  count(total_fail_bins) %>%
+  mutate(total_fail_bins = factor(total_fail_bins, levels = bins_levels)) %>%  
+  mutate(perc=round(n/sum(n), 3)) %>%
+  perc_adjuster()
+
+plot_single_count(
+  count_total_fail,
+  fill="#d73027",
+  "total_fail_bins",   
+  title="Distribution of number of violations",
+  subtitle="for initial inspections with fail status",
+  same_size = TRUE,
+  m=c(20, 5, 10, 5),
+  include_labels = FALSE
+  )
+```
+
+```{r}
+write.csv(df_inspections, paste0(main_path, "/data/resto_inspections_grouped_02.csv"), row.names = FALSE)
+```
+
+
+The plot confirms that the inspections dataset is now consistent, at least regarding the fields we've processed. This iterative approach of detecting and resolving errors has not only enhanced the dataset’s accuracy but also highlighted the importance of continuous vigilance in data quality assurance.
+
+This newly aggregated dataset will complement our original data, adding depth and context to future analyses. By merging both granular and inspection-level insights, we enhance the potential for discovering more comprehensive trends in the neighborhoods of Boston.
+
+***
+<br>
+
+**Next steps**
+
+With both layers of aggregation now established, it's time to delve deeper into the temporal and geographical dimensions of the dataset. We can start mapping out insights with a clearer context of time and place, enhancing our understanding of trends. By aggregating data based on Boston's neighborhoods, we can compare how different areas have evolved over time, offering a more detailed spatial analysis.
+
+We will focus specifically on northern Roxbury, particularly the communities along Blue Hill Ave. This targeted analysis will not only provide valuable insights but also inform our on-site exploration of the neighborhood, helping to connect the data with real-world conditions.
+
+***
+<br>
+
+**Annex**
+
+I discovered a few more insights related to geospatial data, which will be included in the blog post.
+
+# Get basemap
+
+```{r, include=FALSE}
+register_stadiamaps("4107f68c-0827-4b47-958d-89f9f1f37a58", write = FALSE)
+```
+
+```{r}
+bbox_boston <- c(
+  "left" = -71.195,
+  "bottom" = 42.230,
+  "right" = -70.955, 
+  "top" = 42.400
+)
+
+basemap_boston <- get_stadiamap(bbox=bbox_boston,
+                              maptype="stamen_terrain",
+                              zoom=12)
+```
+
+```{r height=500}
+ggmap(basemap_boston) +
+  theme_void()
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

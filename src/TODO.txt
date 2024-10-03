@@ -1,0 +1,13 @@
+- Geographical. Download Boston neighborhoods geometry. Spatial join to correct the locations. I will find some weird coordinates. Solve them first.
+
+- Free text. Analyze comments. I should delete the stop words and maybe generate a word cloud. Decide which of them might correspond to a condition present in a neighboorhood.
+
+- Maybe use some clustering algorithm? Which terms tend to appear together and which individually?
+
+Roxbury:
+
+- Evaluate some chains. Which of them has more/different problems in roxbury vs the rest of the places.
+
+- Evaluate patterns between roxbury and the rest of the city.
+
+- Evaluate patterns within roxbury.

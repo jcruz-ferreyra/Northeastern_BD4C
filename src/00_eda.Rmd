@@ -1,0 +1,365 @@
+---
+title: "00 Exploratory Data Analysis"
+author: "Juan Cruz Ferreyra"
+date: "2024-09-11"
+output: html_document
+---
+
+```{r}
+library(tidyverse)
+library(lubridate)
+```
+
+```{r}
+main_path <- paste0(getwd(), "/..")
+```
+
+```{r}
+df <- read.csv(paste0(main_path, "/data/resto_inspections.csv"))
+```
+
+```{r}
+names(df)
+```
+
+```{r}
+df %>% 
+  summary()
+```
+
+```{r}
+print("Unique values per column")
+print("")
+
+for (column in names(df)) {
+  n_unique <- df[[column]] %>% 
+    unique() %>% 
+    length()
+  
+  print(paste0(column, ": ", n_unique))
+}
+```
+
+Apparently many restaurants with different license issue date get assigned the same expiration date. Possible questions: Do restaurants with near expiration date has more violations? Do restaurants with recently issued license tend to behave better?
+
+```{r}
+df %>% 
+  group_by(businessname, issdttm, expdttm) %>% 
+  summarise(n = n()) %>% 
+  filter(businessname == "2Twenty2")
+```
+
+Business license expires and then it generates a new one!
+
+```{r}
+df[["descript"]] %>% unique()
+```
+
+```{r}
+df
+```
+
+X_id: Indicates the Id number for individual inspection record.
+businessname: gives the business name of food establishments.
+dbaname:
+legalowner: gives the name of legal owner of food establishments.
+namelast: gives last name of contact.
+namefirst: gives list name of contact.
+licenseno: indicates License number of food establishments.
+issdttm: gives issue date of license.
+expdttm: gives expiration date of license.
+licstatus: indicates status of license, active or inactive.
+licensecat: indicates category of license.
+descript: indicates type of food establishments.
+result: indicates result of inspection.
+resultdttm: gives the date on which inspection results were generated.
+violation: gives coding of law regulation related to violations.
+viol_level: indicates level of violations.
+violdesc: indicates reason of violation.
+violdttm: gives the date on which violation status was generated.
+viol_status: indicates status for violation, pass or fail.
+status_date: gives the date on which violation status was set to pass.
+comments: indicates the comments given to the food establishment for improvement.
+
+address: indicates the addresses of food establishments.
+city: indicates the city in which the food establishment is located in.
+state: indicates the state of the restaurant.
+zip: indicates the zip codes for the areas that food establishments located in.
+property_id: indicates the property Id numbers for food establishments.
+location: gives the latitude and longitude where the restaurant is located.
+
+```{r}
+df %>% 
+  count(businessname)
+```
+
+```{r}
+(df %>% 
+  filter(businessname == "1000 Degrees Pizza") %>% 
+  select(result, resultdttm, violdesc, viol_level, violdttm, viol_status, status_date, comments) %>% 
+  arrange(resultdttm))
+```
+
+result: indicates result of inspection.
+resultdttm: gives the date on which inspection results were generated.
+violation: gives coding of law regulation related to violations.
+viol_level: indicates level of violations.
+violdesc: indicates reason of violation.
+violdttm: gives the date on which violation status was generated.
+viol_status: indicates status for violation, pass or fail.
+status_date: gives the date on which violation status was set to pass.
+comments: indicates the comments given to the food establishment for improvement.
+
+***
+
+It seems that result is general for a single inspection (specific time and restaurant) and is based on viol_status. If one violation in an inspection is set to Fail, then the inspecction result is set to HE_Fail or HE_Filed
+
+```{r}
+df %>% 
+  count(result)
+```
+
+I think that all of those unique values can be grouped in less categories.
+
+```{r}
+df2 <- df
+
+df2[df2 == ""] <- "-"
+
+viewed_results <- c(
+  "HE_Fail",
+  "HE_FailExt",
+  "HE_Filed",
+  "HE_Hearing",
+  "HE_Pass",
+  "HE_NotReq",
+  "HE_OutBus",
+  "HE_VolClos",
+  "HE_TSOP",
+  "HE_Hold",
+  "HE_Hearing",
+  "Pass", # same as HE_Pass
+  "Fail", # same as HE_Fail,
+  "HE_Closure",
+  "HE_FAILNOR",
+  "HE_Misc",
+  "DATAERR",
+  "NoViol", # same as HE_Pass
+  "PassViol", # same as HE_Pass
+  "Failed", # same as HE_Fail,
+  "Closed" # inspection not performed
+  )
+
+df2 %>% 
+  filter(!(result%in%viewed_results)) %>%
+  # filter(result=="DATAERR") %>% 
+  arrange(businessname, resultdttm) %>% 
+  select(businessname, result, resultdttm, violdesc, viol_level, violdttm, viol_status, status_date, comments)
+```
+
+Its interesting to study the following case to better understand the variables in the dataframe:
+
+```{r}
+# expdttm
+
+df2 %>% 
+  filter(businessname=="KMB(TEST)") %>% 
+  arrange(resultdttm) %>% 
+  select(result, resultdttm, violdesc, viol_level, violdttm, viol_status, status_date, comments, expdttm)
+```
+
+# 100 Percent Delicia Food
+
+First inspection: February 15th, 2023 -> HE_Fail (6 violations with fail status as individual records)
+Second inspection: February 20th, 2013 -> HE_FailExt (5/6 violations set to pass, 1/6 still failing)
+Third inspection: March 21th, 2013 -> HE_Fail (1/1 violation still failing)
+Fourth inspection: March 28th, 2013 -> HE_Hearing (1/1 violation still failing)
+Fifth inspection: April 2nd, 2013 -> HE_Pass (1/1 violation set to pass)
+
+HE_FailExt is like an extension of the Fail status for a previous inspection. Then it appears HE_Fail again. Maybe they consider that third inspection as out of the extension period and they fine them again?
+
+HE_Hearing is like the violation is still there but it is being adressed. So there is another inspection the next week and it is solved.
+
+***
+
+First inspection: October 24th, 2013 -> HE_Fail (6 violations with fail status as individual records)
+Second inspection: October 31th, 2013 -> HE_FailExt (4/6 violations set to pass, 2/6 still failing)
+    + 1 HE_FailExt general record with empty fields
+Third inspection: November 7th, 2013 -> HE_Pass??? (Just the general records described below)
+    + 1 HE_Pass general record with empty fields
+Fourth inspection: March 6th, 2014 -> HE_Pass (2/2 violation set to pass)
+    + 1 HE_Pass general record with empty fields
+    
+It seems that some inspecctors use a general record for the inspection apart from each record for the violations.
+
+***
+
+First inspection: July 27th, 2015 -> HE_Fail (13 violations with fail status as individual records)
+Second inspection: August 3rd, 2015 -> HE_Filed (12/13 violations set to pass, 1/13 still failing)
+No more inspections that year
+
+Maybe HE_Filed means that there is still one violation ¿more than one too? but not that important to inspect again in the short term. Sometimes HE_Filed is assigned in the first visit. Like.. there are violations but not that important to come back in the near future.
+
+***
+
+What about HE_NotReq? What does it means? Apperas at the end. Like no inspection was carried out maybe. Not Required? Not Requested?
+
+# 1000 Washington Cafe
+
+HE_OutBus? The final record for the restaurant. No inspection was carried out aparently.
+
+# 21 ST. AMENDMENT
+
+First inspection: July 14th, 2011 -> HE_TSOP (general record with empty fields)
+Second inspection: July 19th, 2011 -> HE_Pass (general record with empty fields)
+
+HE_TSOP = Temporary Suspension of Permit??
+
+Maybe they need to redo the permit and then they have an inspetion that should pass? Not related to license expiration date!
+
+# 24 SEVEN
+
+First inspection: April 19th, 2007 -> HE_TSOP (15 violations with fail status as individual records, 5/15: ***)
+Second inspection: April 27th, 2007 -> HE_Filed (14/15 violations set to pass, 1/13 still failing: *)
+
+***
+
+First inspection: March 28th, 2012 -> HE_Filed (3 violations with fail status as individual records, 3/3: *)
+First inspection: April 4th, 2012 -> HE_TSOP (11 violations with fail status as individual records, 3/11: ***)
+First inspection: October 25th, 2012 -> HE_OutBus (11 same violations as last inspection)
+First inspection: December 30th, 2012 -> HE_NotReq (general record with empty fields)
+
+License expiration date for this restaurant: January 1st, 2013
+
+Clearly this restaurant stopped being interested in avoiding violations because its license expiration date was near.
+HE_OutBus? Maybe it is that the restaurant owners decided to close it. Out of Business may be the meaning of the status. Check later for patterns in the owners of the restaurant where they have problematic violations and decide to close the restaurant instead of fixing them when the expiration of the license is near.
+
+HE_NotReq probably is a scheduled inspection and it is not required due to the closing of the restaurant. Sometimes the HE_NotReq is followed by an inspection a month later or so. So it is not always the last record of a resto.
+
+# 211 Better Bagels
+
+First inspection: February 3rd, 2023 -> HE_VolClos (2 violations with fail status as individual records, 2/2: **)
+Second inspection: February 12th, 2023 -> HE_Pass (2/2 violations set to pass)
+
+HE_VolClos may mean Voluntary Closing. And is a proactive measure from the restaurant to avoid penalties.
+
+# 2nd Cup Cafe
+
+First inspection: September 7th, 2007 -> HE_Hold
+Second inspection: September 7th, 2007 (1 hs later) -> HE_Fail (5 violations with fail status as individual records)
+Third inspection: September 21th, 2007 -> HE_Pass (general record with empty fields)
+
+# Wings Live Poultry
+
+First inspection: August 31th, 2007 -> HE_Fail (6 violations with fail status as individual records)
+Second inspection: August 31th, 2007 (1 hs later) -> HE_Hearing (1/6 violations set to pass, 5/6 still failing)
+Third inspecction: September 4th, 2007 -> HE_Hearing (5/6 violations still failing)
+Fourth inspecction: September 13th, 2007 -> HE_Hold (5/5 violations still failing)
+Fifth inspection: September 13th, 2007 (1 hs later) -> HE_TSOP (5/5 violations still failing)
+Sixth inspection: December 10th, 2007 -> HE_NotReq (general record with empty fields)
+
+HE_Hold just appears in some 2007 records. Probably its an outdated category.
+
+HE_Hold: Likely indicates a temporary pause in the inspection process, possibly for administrative reasons or to give the business a short window to address issues. It seems to be an outdated category used around 2007.
+
+HE_Hearing: Refers to an administrative or legal step where the health department and the business discuss the violations and plan corrective actions. It’s a formal process where some violations may be resolved.
+
+# Appleton Farms (TTOR)
+
+First inspection: February 26th, 2018 -> HE_Closure (2 violations with fail status as individual records, 2/2: ***)
+    + 1 of the violations is not having paid for the permit (PIC: person in charge? Performing Duties)
+Second inspection: March 5th, 2018 -> HE_Pass (2/2 violations set to pass)
+
+HE_Closure: likely represents the most serious action taken by health authorities, involving an enforced shutdown of operations due to critical health violations.
+
+# Brother Deli Restaurant
+
+First inspection: November 28th, 2018 -> HE_FAIL (19 violations with fail status as individual records, 4/19: ***)
+Second inspection: December 05th, 2018 -> HE_FAILNOR (16/19 violations set to pass, 3/19 still failing, 3/19: *)
+
+# D'ANGELO'S
+
+First inspection: August 28th, 2016 -> HE_FAIL (7 violations with fail status as individual records, 1/7: **)
+Second inspection: September 7th, 2016 -> HE_FAILNOR (5/7 violations set to pass, 2/7 still failing)
+Third inspection: September 14th, 2016 -> HE_Pass (general record with empty fields)
+
+
+HE_FAILNOR likely suggests that the restaurant failed the inspection but was not subject to an immediate or urgent follow-up inspection, though a future one could still be scheduled to verify that all violations were corrected. Maybe then was decided that another reinspecction is required based on the availability of resources to perform one, or due to different perspectives about the same problem.
+
+# Arizona B B Q
+
+First inspection: October 11th, 2017 -> HE_Fail (4 violations with fail status as individual records)
+Second inspection: October 26th, 2017 -> HE_TSOP (1/4 violations set to pass, 3/4 still failing, 2 new violations)
+Third inspection: November 2nd, 2017 -> HE_Misc (5/5 violations still failing)
+Fourth inspection: November 13th, 2017 -> HE_Fail (2/5 violations still failing, no news about the other 3 likely they have been solved)
+Fourth inspection: November 15th, 2017 -> HE_FailExt (1/2 violations set to pass, 1/2 still failing)
+Fifth inspection: November 26th, 2017 -> HE_Pass (1/1 violations set to pass)
+
+HE_Misc: likely stands for a miscellaneous status, which could indicate an atypical or non-standard inspection outcome that doesn't fit typical categories. In this case, it seems that all 5 violations (the original 3 unresolved ones plus the 2 new ones) were still failing, but the HE_Misc status suggests that additional actions, discussions, or conditions might have been involved (e.g., special instructions, penalties, or hearings).
+
+In some cases (Allandale Farm, B.U. PUB, BARNEY'S GRILL) there are inspections, unrelated to the rest, consisting on a single record with result HE_Misc where all the fileds are empty. May suggest that the inspection was not carried out due to miscellaneous (unknown) reasons?
+
+# BBQ Town
+
+First inspection: November 3rd, 2011 -> HE_Misc (9 violations with fail status as individual records)
+First inspection: November 3rd, 2011 (few hours later) -> HE_Fail (9/9 violations with fail status as individual records)
+Second inspection: November 3rd, 2011 -> HE_Pass (9/9 violations set to pass)
+
+---
+
+In cases where HE_Misc appears with empty fields, it likely means the inspection wasn’t carried out or was incomplete.
+When HE_Misc appears with actual violation data (like in BBQ Town), it may represent an informal or preliminary inspection step before the official pass/fail status is determined.
+The ambiguity of HE_Misc could indicate that it is used flexibly for various purposes depending on the context of the inspection.
+
+Sometimes even is the only one inspection carried out and is not replicating another one (but are the minor cases and 10 or more years behind). Weird status. ej:
+
+# FLAT IRON RESTAURANT AT BULFINCH HOTEL
+
+First inspection: April 22th, 2012 -> HE_Misc (4 violations with fail status as individual records)
+Second inspection: April 23th, 2012 -> HE_Pass (4/4 violations set to pass)
+
+Ingeneral HE_Misc appears as 1 record with empty fields, or replicating the outcome of a previous fail inspection. It seems that the inspection was not carried out in those cases, so they mantain the previous result as the result of that missing inspection.
+
+# ADAM'S CONVENIENT
+
+DATAERR: Unique records, in all places where it pops out. Empty fields. All corresponding to one of these two dates:
+     November 15th, 2007
+     January 24th, 2008
+
+
+```{r}
+df2
+```
+
+Comment column contains instructions to solve the issues.
+
+
+Some possible next steps:
+- Agreggate per inspection. One inspection and new features: result, how many violations for each level? Number of inspection in a row? (How to set that?) How many violations solved? NLP? Maybe, like dummy variables for each: rodents? contamination? mainly for the *** level violations. I should have categories for that kind of violations.
+
+Remember that I should take into account that I need to learn something about the neighborhoods by seeing data.
+
+- Are there patterns of appearence of some vectors like rodents or insects in a specific time and place? What violations refers to specific situations of some restaurant, and which of them refers to general issues in a neighborhood?
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

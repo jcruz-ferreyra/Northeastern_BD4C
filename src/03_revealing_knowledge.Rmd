@@ -1,0 +1,903 @@
+---
+title: "<span style='font-size:28px'>**Assignment 03: Revealing Knowledge** (draft)</style>"
+author: "<span style='font-size:20px'>**Boston Food Establishment Inspections Dataset**</style>"
+date: "Juan Cruz Ferreyra"
+output:
+  html_document:
+    code_folding: "hide"
+---
+
+<style>
+body {
+  text-align: justify;
+  font-size: 16px;}
+</style>
+
+```{r, echo=FALSE}
+library(knitr)
+knitr::opts_chunk$set(warning=FALSE, message=FALSE, echo=TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(stringr)
+library(sf)
+library(ggmap)
+library(tmap)
+library(tmaptools)
+library(osmdata)
+library(kableExtra)
+library(rlang)
+library(writexl)
+library(patchwork)
+```
+
+```{r}
+format_table <- function(df) {
+  df <- df %>% 
+    kbl(align = "c", longtable = TRUE) %>% 
+    kable_styling(
+      bootstrap_options = c("striped", "condensed"),
+      full_width = TRUE,
+      font_size = 12) %>%
+    column_spec(1, width_min = "50%")
+  
+  return(df)
+}
+```
+
+
+***
+<br>
+
+**Context**
+
+This work is part of the graduate course [Big Data for Cities](https://ui.danourban.com/ "ui.danourban.com"), taught by Dan O'Brien at Northeastern University, Boston, MA. For more details, refer to the [first post](link_to_first_post "") of this series.
+
+Additionally, here is the [full list](link_to_full_list "") of posts for this series.
+
+***
+<br>
+
+**Viewing the dataset**
+
+```{r}
+# Load dataset
+main_path <- paste0(getwd(), "/..")
+df <- read.csv(paste0(main_path, "/data/resto_inspections_clean_02.csv"))
+df_inspections <- read.csv(paste0(main_path, "/data/resto_inspections_grouped_02.csv"))
+
+df <- df %>% 
+  mutate(
+    issdttm = ymd_hms(issdttm),
+    issdttm = ymd_hms(issdttm),
+    resultdttm = ymd_hms(resultdttm)
+    )
+
+df_inspections <- df_inspections %>% 
+  mutate(
+    issdttm = ymd_hms(issdttm),
+    issdttm = ymd_hms(issdttm),
+    resultdttm = ymd_hms(resultdttm)
+    )
+```
+
+In this post, we will locate inspections across Boston to gain some initial insights into the spatial distribution of restaurants and the prevalence of violations. This analysis will inform our city exploration, with a particular focus later on Roxbury, where we are collaborating with organizations this semester.
+
+```{r, include=FALSE}
+register_stadiamaps("4107f68c-0827-4b47-958d-89f9f1f37a58", write = FALSE)
+```
+
+```{r}
+bbox_boston <- c(
+  "left" = -71.195,
+  "bottom" = 42.230,
+  "right" = -70.955, 
+  "top" = 42.400
+)
+
+basemap_boston <- get_stadiamap(bbox=bbox_boston,
+                              maptype="stamen_terrain",
+                              zoom=12)
+```
+
+```{r height=500, include=FALSE}
+ggmap(basemap_boston) +
+  theme_void()
+```
+
+We plot the inspections based on their recorded coordinates, overlaying them on a map of Boston. This provides an initial impression of the density of establishments across different parts of the city.
+
+```{r}
+gdf_inspections <- df_inspections %>% 
+  filter(!(is.na(longitude) | is.na(latitude))) %>% 
+  st_as_sf(coords = c("longitude", "latitude"), crs = 4326, remove = FALSE)
+```
+
+```{r}
+ggmap(basemap_boston, darken = c(0.6, "white")) +
+  geom_sf(data=sample_n(gdf_inspections, 50000), color="#542788", shape=16, size=.5, alpha=0.1, inherit.aes=FALSE) +
+  theme_void()
+```
+
+We observe a high density of points in the area between Back Bay and downtown. In the surrounding neighborhoods, we still note an intermediate to high density. Moving west and south, the establishments are mainly clustered along avenues and major streets.
+
+We also confirm that the map's boundaries are reasonable, as they include all the establishments located in Boston. However, we notice some points that fall outside this bounding box.
+
+```{r}
+df_inspections$is_outbbox <- (
+    df_inspections$longitude < bbox_boston[["left"]] |
+    df_inspections$longitude > bbox_boston[["right"]] |
+    df_inspections$latitude < bbox_boston[["bottom"]] |
+    df_inspections$latitude > bbox_boston[["top"]]
+    )
+
+df_outbbox <- df_inspections %>% 
+  filter(is_outbbox)
+
+gdf_inspections <- df_inspections %>% 
+  filter(!(is.na(longitude) | is.na(latitude))) %>% 
+  st_as_sf(coords = c("longitude", "latitude"), crs = 4326, remove = FALSE)
+
+bbox_us <- c(
+  "left" = -90,
+  "bottom" = 30,
+  "right" = -66, 
+  "top" = 49
+)
+
+basemap_us <- get_stadiamap(bbox=bbox_us,
+                              maptype="stamen_terrain",
+                              zoom=4)
+
+ggmap(basemap_us, darken = c(0.6, "white")) +
+  geom_sf(data=sample_n(gdf_inspections, 50000), aes(color=is_outbbox), shape=16, size=2, alpha=1, inherit.aes=FALSE) +
+  scale_color_manual(values = c("orange", "red"), name = "Out of Boston") +
+  theme_void()
+```
+
+There are `r nrow(df_outbbox)` inspections with coordinates that are either missing or incorrectly placed in the ocean. This likely indicates a default position assigned to records without valid coordinates. The error could stem from data entry mistakes by inspectors or automated geocoding failures. Alternatively, the data may have been sourced from a database that contained these corrupted coordinates.
+
+We will now investigate these points further to identify any patterns and assess whether it's worth the effort to correct them.
+
+```{r}
+n_outbbox_address <- df_outbbox %>% 
+  pull(address) %>% 
+  unique() %>% 
+  length()
+```
+
+Among the `r nrow(df_outbbox)` inspections with incorrect coordinates, we found `r n_outbbox_address` unique addresses. Let’s now examine the types of food establishments that appear with corrupted locations.
+
+```{r}
+df_outbbox %>% 
+  count(descript) %>% 
+  format_table() %>% 
+  scroll_box()
+```
+
+Next, we analyze the most common keywords in the address field. This may provide insights into establishments with incorrect locations.
+
+```{r}
+df_outbbox %>%
+  mutate(address = tolower(gsub("V F W", "VFW", address))) %>% 
+  mutate(longest_word = sapply(str_split(address, " "), function(x) x[which.max(nchar(x))])) %>% 
+  count(longest_word) %>% 
+  arrange(desc(n)) %>% 
+  head(10) %>% 
+  format_table()
+```
+
+We observe several instances of "citywide"! What does this mean? We also notice keywords like "airport," "terminal," "Faneuil," and "legends," which likely refer to Logan Airport and TD Garden. These are not actual addresses, which explains their corrupted coordinates in the dataset.
+
+We can start addressing some of these errors. For instance, we can assign all records with "airport" to a central point in the parking zone, as we don’t need granular detail for that area.
+
+```{r}
+is_outbbox <- df_inspections$is_outbbox
+is_outbbox[is.na(is_outbbox)] <- TRUE
+
+is_airport <- str_detect(tolower(df_inspections$address), fixed("airport")) |
+  str_detect(tolower(df_inspections$address), fixed("logan"))
+is_airport[is.na(is_airport)] <- FALSE
+
+df_inspections$longitude[is_outbbox & is_airport] <- -71.020819
+df_inspections$latitude[is_outbbox & is_airport] <- 42.366652
+```
+
+Similarly, let’s confirm that "legends" refers to TD Garden and adjust its coordinates accordingly.
+
+```{r}
+df_outbbox %>% 
+  filter(str_detect(tolower(address), fixed("legends"))) %>% 
+  count(address) %>% 
+  arrange(desc(n)) %>% 
+  format_table()
+```
+
+```{r}
+is_legends <- str_detect(tolower(df_inspections$address), fixed("legends"))
+is_legends[is.na(is_legends)] <- FALSE
+
+df_inspections$longitude[is_outbbox & is_legends] <- -71.061460
+df_inspections$latitude[is_outbbox & is_legends] <- 42.365465
+```
+
+Next, let’s handle "Faneuil."
+
+```{r}
+df_outbbox %>% 
+  filter(str_detect(tolower(address), fixed("faneuil"))) %>% 
+  count(address) %>% 
+  arrange(desc(n)) %>% 
+  format_table()
+```
+
+```{r}
+is_faneuil <- str_detect(tolower(df_inspections$address), fixed("faneuil"))
+is_faneuil[is.na(is_faneuil)] <- FALSE
+
+df_inspections$longitude[is_outbbox & is_faneuil] <- -71.054868
+df_inspections$latitude[is_outbbox & is_faneuil] <- 42.360107
+```
+
+
+***
+
+After making these changes, we’ll check the updated ranking of the most common keywords in the address field.
+
+```{r}
+df_inspections$is_outbbox <- (
+    df_inspections$longitude < bbox_boston[["left"]] |
+    df_inspections$longitude > bbox_boston[["right"]] |
+    df_inspections$latitude < bbox_boston[["bottom"]] |
+    df_inspections$latitude > bbox_boston[["top"]]
+    )
+
+df_outbbox <- df_inspections %>% 
+  filter(is_outbbox)
+```
+
+```{r}
+df_outbbox %>%
+  mutate(address = tolower(gsub("V F W", "VFW", address))) %>% 
+  mutate(longest_word = sapply(str_split(address, " "), function(x) x[which.max(nchar(x))])) %>% 
+  count(longest_word) %>% 
+  arrange(desc(n)) %>% 
+  head(10) %>% 
+  format_table()
+```
+
+Let’s focus on the "citywide" category. Specifically, we’ll examine the types of establishments associated with this keyword in their address.
+
+```{r}
+df_outbbox %>% 
+  filter(str_detect(tolower(address), fixed("citywide"))) %>% 
+  count(descript) %>% 
+  arrange(desc(n)) %>% 
+  format_table()
+```
+
+Almost every mobile food walk-on establishment with corrupted coordinates has "citywide" in the address field. Since they don’t have fixed locations in Boston, we can assign them coordinates (0, 0) to easily identify them later.
+
+```{r}
+is_outbbox <- df_inspections$is_outbbox
+is_outbbox[is.na(is_outbbox)] <- TRUE
+
+is_citywide <- str_detect(tolower(df_inspections$address), fixed("citywide"))
+is_citywide[is.na(is_citywide)] <- FALSE
+
+is_mobile <- df_inspections$descript=="Mobile Food Walk On"
+
+df_inspections$longitude[is_outbbox & is_citywide & is_mobile] <- 0
+df_inspections$latitude[is_outbbox & is_citywide & is_mobile] <- 0
+```
+
+***
+
+What about the non-mobile establishments with "citywide" keyword?
+
+```{r}
+df_outbbox %>% 
+  filter(str_detect(tolower(address), fixed("citywide"))) %>% 
+  filter(descript!="Mobile Food Walk On") %>% 
+  count(businessname) %>% 
+  arrange(desc(n)) %>% 
+  format_table()
+```
+
+Interestingly, we also find establishments located on islands, as well as some tied to MBTA stations. Let’s check for other island-based businesses by searching for the keyword "island" in the business name or address fields among inspections with corrupted coordinates.
+
+```{r}
+df_outbbox %>% 
+  filter(str_detect(tolower(address), fixed("island")) | str_detect(tolower(businessname), fixed("island"))) %>% 
+  count(businessname, address) %>% 
+  arrange((desc(n))) %>% 
+  format_table()
+```
+
+Except for "Blue Island" business, the other records correspond to actual islands. We can manually assign these establishments their correct positions.
+
+```{r}
+is_outbbox <- df_inspections$is_outbbox
+is_outbbox[is.na(is_outbbox)] <- TRUE
+
+# Thompson
+is_thompson <- str_detect(tolower(df_inspections$businessname), fixed("thompson island"))
+is_thompson[is.na(is_thompson)] <- FALSE
+
+df_inspections$longitude[is_outbbox & is_thompson] <- -71.006902
+df_inspections$latitude[is_outbbox & is_thompson] <- 42.318418
+
+# Georges
+is_georges <- str_detect(tolower(df_inspections$address), fixed("georges island"))
+is_georges[is.na(is_georges)] <- FALSE
+
+df_inspections$longitude[is_outbbox & is_georges] <- -70.929850
+df_inspections$latitude[is_outbbox & is_georges] <- 42.319463
+  
+# Long
+is_long <- str_detect(tolower(df_inspections$address), fixed("long island"))
+is_long[is.na(is_long)] <- FALSE
+
+df_inspections$longitude[is_outbbox & is_long] <- -70.964495
+df_inspections$latitude[is_outbbox & is_long] <- 42.323244
+```
+
+```{r}
+df_inspections$is_outbbox <- (
+    df_inspections$longitude < bbox_boston[["left"]] |
+    df_inspections$longitude > bbox_boston[["right"]] |
+    df_inspections$latitude < bbox_boston[["bottom"]] |
+    df_inspections$latitude > bbox_boston[["top"]]
+    )
+
+df_outbbox <- df_inspections %>% 
+  filter(is_outbbox)
+```
+
+```{r}
+n_outbbox <- df_outbbox %>% 
+  filter(latitude!=0) %>% 
+  nrow()
+```
+
+We now have `r n_outbbox` inspections with unresolved coordinates. Notably, we have corrected almost half of the initially corrupted points with minimal effort. However, we’ve tackled the easiest cases—those with the most repeated addresses. 
+
+For now, we won’t modify any further records (though we can revisit this later and use geocoding to fix remaining addresses). Next, we’ll proceed with spatial joins to verify the neighborhood assigned to each inspection, and begin gaining insights into Roxbury.
+
+```{r}
+gdf_inspections <- df_inspections %>% 
+  filter(!(is.na(longitude) | is.na(latitude))) %>% 
+  st_as_sf(coords = c("longitude", "latitude"), crs = 4326, remove = FALSE)
+```
+
+
+We use the 2020 census neighborhoods, which are an approximation to real neighborhoods boundaries by grouping on census tracts. This will later allow us to relate information from both sources in future posts.
+
+```{r}
+neighs_NAD83 <- read_sf(paste0(
+    main_path, "/data/neighborhoods/Census2020_BG_Neighborhoods.shp"
+  ))
+```
+
+```{r}
+# Convert to mercator
+neighs <- neighs_NAD83 %>% 
+  st_transform(crs = 4326) %>% 
+  rename(neighborhood = BlockGr202) %>% 
+  select(neighborhood, geometry)
+```
+
+```{r}
+neighs %>% 
+  head(10) %>% 
+  format_table()
+```
+
+Let’s perform the spatial join to assign a neighborhood name to each inspection based on its coordinates.
+
+```{r}
+# Add neighborhood field
+gdf_inspections <- gdf_inspections %>% 
+  st_join(neighs)
+
+# Add common senses field
+gdf_common_senses <- read_sf(paste0(
+    main_path, "/data/common_senses_area/common_senses_area.shp"
+  )) %>% 
+  rename(common_senses = id)
+
+gdf_inspections <- gdf_inspections %>% 
+  st_join(gdf_common_senses)
+
+gdf_inspections$common_senses[is.na(gdf_inspections$common_senses)] <- 0
+
+df_inspections <- st_set_geometry(gdf_inspections, NULL)
+
+# View some inspections
+set.seed(42)
+df_inspections %>% 
+  select(businessname, address, licenseno, resultdttm, total_fail, total_pass, n_records, neighborhood) %>% 
+  sample_n(10) %>% 
+  format_table() %>% 
+  scroll_box()
+```
+
+```{r}
+ggmap(basemap_boston, darken = c(0.6, "white")) +
+  geom_sf(data=gdf_common_senses, fill = NA, color = "black", linewidth = .7, inherit.aes=FALSE) +
+  geom_sf(data=sample_n(gdf_inspections, 50000), color="#313695", shape=16, size=.5, alpha=0.05, inherit.aes=FALSE) +
+  labs(title="Distribution of restaurants in Boston area",
+     fill=NULL,
+     y=NULL,
+     x=NULL,
+     caption=NULL) +
+  theme_light() +
+  theme(plot.margin=margin(10, 0, 5, 0),
+        aspect.ratio=1,
+        panel.border=element_rect(colour="gray20"),
+        panel.grid.minor.x=element_blank(),
+        panel.grid.major.x=element_blank(),
+        panel.grid.minor.y=element_blank(),
+        panel.grid.major.y=element_blank(),
+        panel.background=element_blank(),
+        panel.ontop=FALSE,
+        plot.title=element_text(size=9,
+                                face="bold",
+                                hjust=.5,
+                                vjust=2.5,
+                                colour="gray20"),
+        plot.caption=element_text(size=5,
+                                  hjust=.989,
+                                  colour="gray20"),
+        axis.title.x=element_text(size=8.5,
+                                  colour="gray20",
+                                  face="bold"),
+        axis.text.x=element_text(size=6.5,
+                                 colour="gray20",
+                                 angle=0),
+        axis.text.y=element_text(size=6.5,
+                                 colour="gray20")
+  ) +
+  annotate("label", x = -70.989, y = 42.322, label = "Common Senses", size=3, color="black", fill="white", fontface = "bold", label.size=NA, alpha=.2, hjust=1) +
+  annotate("label", x = -70.99, y = 42.3171, label = "study area", size=2.7, color="black", label.size=NA, alpha=0, hjust=1) +
+  annotate("segment", x = -70.992, y = 42.313, xend = -71.065, yend = 42.313, size=.7, color="black")
+```
+
+Now, let’s focus on Common Senses area inspections to inform our city exploration task.
+
+```{r}
+common_senses_geom <- as.data.frame(unique(st_coordinates(gdf_common_senses$geometry[[1]])))
+
+bbox_common_senses <- c(
+  "left" = min(common_senses_geom$X) - 0.001,
+  "bottom" = min(common_senses_geom$Y) - 0.001,
+  "right" = max(common_senses_geom$X) + 0.001,
+  "top" = max(common_senses_geom$Y) + 0.001
+)
+
+basemap_common_senses <- get_stadiamap(bbox=bbox_common_senses,
+                              maptype="stamen_terrain",
+                              zoom=15)
+```
+
+**DIVIDE BETWEEN PRE AND POST PANDEMIC RESTAURANTS for the common senses area**
+
+```{r}
+gdf_cs <- gdf_inspections %>% 
+  filter(
+    latitude < bbox_common_senses["top"] &
+    latitude > bbox_common_senses["bottom"] &
+    longitude < bbox_common_senses["right"] &
+    longitude > bbox_common_senses["left"]
+    )
+
+gdf_cs_prepand <- gdf_cs %>% 
+  filter(resultdttm < ymd("2020-04-01")) %>% 
+  arrange(total_fail)
+
+gdf_cs_postpand <- gdf_cs %>% 
+  filter(resultdttm >= ymd("2022-01-01")) %>% 
+  arrange(total_fail)
+```
+
+```{r}
+ggmap_prepand <- ggmap(basemap_common_senses, darken = c(0.6, "white")) +
+  geom_sf(data=filter(gdf_cs_prepand, common_senses==1 & inspection_number==1), color="#313695", shape=16, size=1.25, alpha=.8, inherit.aes=FALSE) +
+  geom_sf(data=filter(gdf_cs_prepand, common_senses==0 & inspection_number==1), color="#4575b4", shape=16, size=1.25, alpha=.8, inherit.aes=FALSE) +
+  geom_sf(data=gdf_common_senses, fill = NA, color = "gray40", linewidth = .8, inherit.aes=FALSE) +
+  scale_color_distiller(palette = "Reds", direction = 1, name = "Violations") +
+  labs(
+    title="Restaurants in Common Senses study area",
+    subtitle="pre-pandemic period (aug06 - mar20)",
+    fill=NULL,
+    y=NULL,
+    x=NULL,
+    caption=NULL
+    ) +
+  theme_light() +
+  theme(plot.margin=margin(10, 5, 5, 5),
+        aspect.ratio=1.2,
+        panel.border=element_rect(colour="gray20"),
+        panel.grid.minor.x=element_blank(),
+        panel.grid.major.x=element_blank(),
+        panel.grid.minor.y=element_blank(),
+        panel.grid.major.y=element_blank(),
+        panel.background=element_blank(),
+        panel.ontop=FALSE,
+        plot.title=element_text(size=9,
+                                face="bold",
+                                hjust=.5,
+                                vjust=2.5,
+                                colour="gray20"),
+        plot.subtitle=element_text(size=9,
+                                hjust=.5,
+                                vjust=2.5,
+                                colour="gray20"),
+        plot.caption=element_text(size=5,
+                                  hjust=.989,
+                                  colour="gray20"),
+        axis.text.x=element_text(size=6.5,
+                                 colour="gray20",
+                                 angle=0),
+        axis.text.y=element_text(size=6.5,
+                                 colour="gray20")
+  )
+```
+
+```{r}
+ggmap_postpand <- ggmap(basemap_common_senses, darken = c(0.6, "white")) +
+  geom_sf(data=filter(gdf_cs_postpand, common_senses==1 & inspection_number==1), color="#313695", shape=16, size=1.25, alpha=.8, inherit.aes=FALSE) +
+  geom_sf(data=filter(gdf_cs_postpand, common_senses==0 & inspection_number==1), color="#4575b4", shape=16, size=1.25, alpha=.8, inherit.aes=FALSE) +
+  geom_sf(data=gdf_common_senses, fill = NA, color = "gray40", linewidth = .8, inherit.aes=FALSE) +
+  scale_color_distiller(palette = "Reds", direction = 1, name = "Violations") +
+  labs(
+    title="Restaurants in Common Senses study area",
+    subtitle="post-pandemic period (jan22 - sep24)",
+    fill=NULL,
+    y=NULL,
+    x=NULL,
+    caption=NULL
+    ) +
+  theme_light() +
+  theme(plot.margin=margin(10, 5, 5, 5),
+        aspect.ratio=1.2,
+        panel.border=element_rect(colour="gray20"),
+        panel.grid.minor.x=element_blank(),
+        panel.grid.major.x=element_blank(),
+        panel.grid.minor.y=element_blank(),
+        panel.grid.major.y=element_blank(),
+        panel.background=element_blank(),
+        panel.ontop=FALSE,
+        plot.title=element_text(size=9,
+                                face="bold",
+                                hjust=.5,
+                                vjust=2.5,
+                                colour="gray20"),
+        plot.subtitle=element_text(size=9,
+                                hjust=.5,
+                                vjust=2.5,
+                                colour="gray20"),
+        plot.caption=element_text(size=5,
+                                  hjust=.989,
+                                  colour="gray20"),
+        axis.text.x=element_text(size=6.5,
+                                 colour="gray20",
+                                 angle=0),
+        axis.text.y=element_text(size=6.5,
+                                 colour="gray20")
+  )
+```
+
+```{r}
+ggmap_prepand + ggmap_postpand
+```
+
+```{r}
+library(fpc)
+```
+
+```{r}
+gdf_cs_postpand_NAD83 <- gdf_cs_postpand %>% 
+  st_transform(crs = 2249)# Transform to NAD83
+
+df_cs_postpand_NAD83 <- gdf_cs_postpand_NAD83 %>% 
+  cbind(data.frame(st_coordinates(gdf_cs_postpand_NAD83$geometry))) %>% 
+  st_set_geometry(NULL)
+
+nonreq_results <- c("HE_NotReq", "HE_OutBus", "DATAERR")
+
+df_clusters <- df_cs_postpand_NAD83 %>% 
+  filter(!(result%in%nonreq_results)) %>% 
+  filter(common_senses==1) %>% 
+  group_by(licenseno) %>% 
+  slice(1)
+
+clusters <- dbscan(df_clusters[c("X", "Y")], eps = 250, MinPts = 3) 
+
+df_clusters$cluster <- clusters$cluster
+
+gdf_cs_postpand <- gdf_cs_postpand %>% 
+  left_join(df_clusters[c("licenseno", "cluster")], by="licenseno")
+```
+
+```{r}
+gdf_cs_postpand %>% 
+  pull(cluster) %>% 
+  unique()
+```
+
+
+```{r}
+cluster_colors <- c(
+  "0" = "gray60",
+  "1" = "#F8766D",
+  "2" = "#DE8C00",
+  "3" = "#B79F00",
+  "4" = "#7CAE00",
+  "5" = "#00BA38",
+  "6" = "#00C08B",
+  "7" = "#00BFC4",
+  "8" = "#00B4F0",
+  "9" = "#619CFF",
+  "10" = "#C77CFF",
+  "11" = "#F564E3",
+  "12" = "#FF64B0"
+  )
+
+cluster_labels <- gdf_cs_postpand %>% 
+  filter(cluster!=0) %>% 
+  group_by(cluster) %>% 
+  slice(1)
+
+ggmap(basemap_common_senses, darken = c(0.6, "white")) +
+  geom_sf(data=filter(gdf_cs_postpand, common_senses==1 & inspection_number==1), aes(color=as.character(cluster)), shape=16, size=1.25, alpha=.8, inherit.aes=FALSE) +
+  scale_color_manual(values=cluster_colors) +
+  geom_sf(data=gdf_common_senses, fill = NA, color = "gray40", linewidth = .6, inherit.aes=FALSE) +
+  geom_text(aes(x=longitude, y=latitude, label=as.character(cluster)), 
+            data=cluster_labels, inherit.aes=FALSE, color="black", fontface = "bold", size=2.5, nudge_x = .0008, nudge_y = .0004) +
+  labs(
+    title="Clusters of restaurants in Common Senses study area",
+    subtitle="post-pandemic period (jan22 - sep24)",
+    fill=NULL,
+    y=NULL,
+    x=NULL,
+    caption=NULL
+    ) +
+  theme_light() +
+  theme(plot.margin=margin(10, 5, 5, 5),
+        aspect.ratio=1.2,
+        panel.border=element_rect(colour="gray20"),
+        panel.grid.minor.x=element_blank(),
+        panel.grid.major.x=element_blank(),
+        panel.grid.minor.y=element_blank(),
+        panel.grid.major.y=element_blank(),
+        panel.background=element_blank(),
+        panel.ontop=FALSE,
+        plot.title=element_text(size=9,
+                                face="bold",
+                                hjust=.5,
+                                vjust=2.5,
+                                colour="gray20"),
+        plot.subtitle=element_text(size=9,
+                                hjust=.5,
+                                vjust=2.5,
+                                colour="gray20"),
+        plot.caption=element_text(size=5,
+                                  hjust=.989,
+                                  colour="gray20"),
+        axis.text.x=element_text(size=6.5,
+                                 colour="gray20",
+                                 angle=0),
+        axis.text.y=element_text(size=6.5,
+                                 colour="gray20"),
+        legend.position="none"
+  )
+```
+
+```{r}
+gdf_cluster_polygons <- gdf_cs_postpand %>%
+  filter(cluster!=0) %>% 
+  group_by(cluster) %>%
+  summarize(geometry = st_union(geometry), .groups = 'drop') %>%
+  mutate(geometry = st_cast(geometry, "MULTIPOINT")) %>%
+  mutate(geometry = st_convex_hull(geometry)) %>%
+  mutate(geometry = st_buffer(geometry, dist = 40))
+```
+
+```{r}
+gdf_cs_postpand_first <- gdf_cs_postpand %>% 
+  filter(inspection_number == 1 & common_senses == 1) %>% 
+  arrange(total_fail)
+
+df_cs_postpand_first <- gdf_cs_postpand_first %>% 
+  st_set_geometry(NULL)
+
+df_cs_postpand_first %>% 
+  filter(cluster!=0) %>% 
+  count(cluster) %>% 
+  format_table() %>% 
+  scroll_box()
+```
+
+```{r}
+ggmap(basemap_common_senses, darken = c(0.6, "white")) +
+  geom_sf(data=gdf_cs_postpand_first, aes(color = total_fail), shape=16, size=1.25, alpha=.8, inherit.aes=FALSE) +
+  scale_color_distiller(palette = "Reds", direction = 1, name = "Number of\nviolations", breaks = c(0, 4, 8, 12)) +
+  geom_sf(data=gdf_common_senses, fill = NA, color = "gray40", linewidth = .6, inherit.aes=FALSE) +
+  geom_sf(data=gdf_cluster_polygons , fill = NA, color = "black", linewidth = .6, linetype = "dotted", inherit.aes=FALSE) +
+  geom_text(aes(x=longitude, y=latitude, label=as.character(cluster)), 
+            data=cluster_labels, inherit.aes=FALSE, color="black", fontface = "bold", size=2.5, nudge_x = .0008, nudge_y = .0004) +
+  labs(
+    title="Number of violations in the first inspection",
+    subtitle="post-pandemic period (jan22 - sep24)",
+    fill=NULL,
+    y=NULL,
+    x=NULL,
+    caption=NULL
+    ) +
+  theme_light() +
+  theme(plot.margin=margin(10, 5, 5, 5),
+        aspect.ratio=1.2,
+        panel.border=element_rect(colour="gray20"),
+        panel.grid.minor.x=element_blank(),
+        panel.grid.major.x=element_blank(),
+        panel.grid.minor.y=element_blank(),
+        panel.grid.major.y=element_blank(),
+        panel.background=element_blank(),
+        panel.ontop=FALSE,
+        plot.title=element_text(size=9,
+                                face="bold",
+                                hjust=.5,
+                                vjust=2.5,
+                                colour="gray20"),
+        plot.subtitle=element_text(size=9,
+                                hjust=.5,
+                                vjust=2.5,
+                                colour="gray20"),
+        plot.caption=element_text(size=5,
+                                  hjust=.989,
+                                  colour="gray20"),
+        axis.text.x=element_text(size=6.5,
+                                 colour="gray20",
+                                 angle=0),
+        axis.text.y=element_text(size=6.5,
+                                 colour="gray20"),
+        legend.position="right",
+        legend.title=element_text(size = 8,
+                                  colour = "gray20",
+                                  face="bold"),
+        legend.text=element_text(size = 7.5,
+                                 colour = "gray20",
+                                 margin=margin(c(0,0,0,0.5),unit="cm")),
+        legend.spacing.x=unit(.1,"cm"),
+        legend.key.size=unit(.35,"cm")
+  )
+```
+
+```{r}
+df_cs_postpand_first <- df_cs_postpand_first %>% 
+  arrange(cluster) %>% 
+  mutate(cluster = factor(cluster, levels=0:12))
+```
+
+```{r}
+box_plot_per_cluster <- ggplot(data = filter(df_cs_postpand_first, cluster!=0) , aes(x=cluster, y=total_fail, fill=cluster)) +
+  geom_boxplot() +
+  scale_color_manual(values=cluster_colors) +
+  geom_jitter(color="black", size=0.4, alpha=0.9) +
+  labs(
+    title="Box plot of number of violations in the first inspection",
+    subtitle="post-pandemic period (jan22 - sep24)",
+    fill=NULL,
+    y="Number of violations",
+    x="Cluster",
+    caption=NULL
+    ) +
+  theme_light() +
+  theme(plot.margin=margin(10, 5, 5, 5),
+        aspect.ratio=.5,
+        panel.border=element_rect(colour="gray20"),
+        panel.grid.minor.x=element_blank(),
+        panel.grid.major.x=element_line(),
+        panel.grid.minor.y=element_line(),
+        panel.grid.major.y=element_line(),
+        panel.background=element_blank(),
+        panel.ontop=FALSE,
+        plot.title=element_text(size=9,
+                                face="bold",
+                                hjust=.5,
+                                vjust=2.5,
+                                colour="gray20"),
+        plot.subtitle=element_text(size=9,
+                                hjust=.5,
+                                vjust=2.5,
+                                colour="gray20"),
+        plot.caption=element_text(size=5,
+                                  hjust=.989,
+                                  colour="gray20"),
+        axis.title.x=element_text(size=8.5,
+                                 colour="gray20",
+                                 angle=0),
+        axis.text.x=element_text(size=7.5,
+                                 colour="gray20",
+                                 angle=0),
+        axis.title.y=element_text(size=8.5,
+                                 colour="gray20"),
+        axis.text.y=element_text(size=7.5,
+                                 colour="gray20"),
+        legend.position="none"
+  )
+  
+
+box_plot_per_cluster
+```
+
+```{r}
+df_cs_postpand <- gdf_cs_postpand %>% 
+  st_set_geometry(NULL)
+```
+
+```{r}
+nonreq_results <- c("HE_NotReq", "HE_OutBus", "DATAERR")
+
+df_cs_postpand_last <- df_cs_postpand %>% 
+  filter(common_senses==1) %>%
+  filter(!(result%in%nonreq_results)) %>% 
+  arrange(licenseno, resultdttm)
+
+last_inspections <- lead((df_cs_postpand_last$inspection_number == 1), 1)
+last_inspections[is.na(last_inspections)] <- TRUE
+
+df_cs_postpand_last <- df_cs_postpand_last %>% 
+  filter(last_inspections)
+```
+
+```{r}
+df_cs_postpand_last <- df_cs_postpand_last %>% 
+  arrange(cluster) %>% 
+  mutate(cluster = factor(cluster, levels=0:12))
+```
+
+
+```{r}
+box_plot_per_cluster <- ggplot(data = filter(df_cs_postpand_last, cluster!=0) , aes(x=cluster, y=inspection_number, fill=cluster)) +
+  geom_boxplot() +
+  scale_color_manual(values=cluster_colors) +
+  geom_jitter(color="black", size=0.4, alpha=0.9) +
+  theme_light()
+
+box_plot_per_cluster
+```
+
+
+```{r}
+df_cs_postpand_first %>% 
+  filter(cluster==9) %>% 
+  arrange(licenseno, resultdttm)
+```
+
+
+
+
+
+
+
+
+
+
+---
+
+**Next steps**
+
+Building on common sense mapping, our primary focus will be on identifying issues related to rodents and trash.
+
+To enhance our analysis, it would be valuable to extract data from the free-text fields, specifically the violation descriptions and comments made by inspectors to the managers of the establishments. By encoding this qualitative data into our inspections dataset, we can uncover new patterns that go beyond purely quantitative measures. This approach will allow us to integrate more nuanced insights into our analysis and reveal underlying issues that may not be immediately evident from the numerical data alone.
+
+Pattern cualitative in next steps!!
+
+
+
+
+
+
