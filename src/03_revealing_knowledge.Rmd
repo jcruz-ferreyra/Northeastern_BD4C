@@ -796,7 +796,7 @@ box_plot_per_cluster <- ggplot(data = filter(df_cs_postpand_first, cluster!=0) ,
     ) +
   theme_light() +
   theme(plot.margin=margin(10, 5, 5, 5),
-        aspect.ratio=.5,
+        aspect.ratio=.3,
         panel.border=element_rect(colour="gray20"),
         panel.grid.minor.x=element_blank(),
         panel.grid.major.x=element_line(),

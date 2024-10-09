@@ -775,7 +775,7 @@ plot_cross_count(
     colors=color_var,
     orient="h",
     m=c(10, 10, 5, 0),
-    aspect_ratio=.4
+    aspect_ratio=.5
 )
 ```
 
